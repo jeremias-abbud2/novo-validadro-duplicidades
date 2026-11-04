@@ -1,5 +1,40 @@
 import ExcelJS from 'exceljs';
 
+export interface ITDiagnosticsStats {
+  totalGroups: number;
+  deltaZeroCount: number;
+  instantPercent: number;
+  delta1to5Count: number;
+  microPercent: number;
+  delta6to30Count: number;
+  shortPercent: number;
+  deltaOver30Count: number;
+  extendedPercent: number;
+  sameProtocolCount: number;
+  sameProtocolPercent: number;
+  differentProtocolCount: number;
+  differentProtocolPercent: number;
+  noProtocolCount: number;
+  sameRemessaCount: number;
+  sameRemessaPercent: number;
+  differentRemessaCount: number;
+  differentRemessaPercent: number;
+  noRemessaCount: number;
+  topProviderConcentrationPercent: number;
+  top3ProvidersSharePercent: number;
+  topProviderName: string;
+  topProviderCount: number;
+  topProvidersList: { provider: string; count: number; percent: number }[];
+  topProceduresList: { procedure: string; count: number; percent: number }[];
+  dayOfWeekDistribution: { dayName: string; count: number; percent: number }[];
+  monthlyDistribution: { monthLabel: string; count: number; percent: number }[];
+  shiftDistribution: { shiftName: string; count: number; percent: number }[];
+  topBeneficiariesList: { beneficiary: string; count: number; percent: number }[];
+  situationsDistribution: { situation: string; count: number; percent: number }[];
+  dayOfMonthDistribution: { dayNum: number; dayLabel: string; count: number; percent: number }[];
+  monthCycleDistribution: { cycleName: string; count: number; percent: number }[];
+}
+
 export interface ExportReportOptions {
   fileName?: string;
   transactionCount: number;
@@ -12,6 +47,7 @@ export interface ExportReportOptions {
   getGroupTimeInterval: (rows: any[]) => { minDiff: number | null; label: string; level: string };
   getRowTime?: (row: any) => string;
   hasMultiOriginFiles?: boolean;
+  itStats?: ITDiagnosticsStats;
 }
 
 export async function exportFormattedExcelReport(options: ExportReportOptions) {
@@ -26,7 +62,8 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     normalizeDate,
     getGroupTimeInterval,
     getRowTime,
-    hasMultiOriginFiles
+    hasMultiOriginFiles,
+    itStats
   } = options;
 
   if (duplicateGroups.length === 0) return;
@@ -562,6 +599,10 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     pRowIdx++;
   });
 
+  if (itStats) {
+    addITDiagnosticsWorksheet(workbook, itStats, transactionCount, 'Padrões e Comparativos');
+  }
+
   // Geração do arquivo e download no browser
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -588,10 +629,11 @@ export interface DashboardReportOptions {
     topProviders: { provider: string; count: number }[];
     topProcedures: { procedure: string; count: number }[];
   };
+  itStats?: ITDiagnosticsStats;
 }
 
 export async function exportFormattedDashboardReport(options: DashboardReportOptions) {
-  const { transactionCount, duplicateGroups, categoryStats, dashboardStats } = options;
+  const { transactionCount, duplicateGroups, categoryStats, dashboardStats, itStats } = options;
   if (duplicateGroups.length === 0) return;
 
   const workbook = new ExcelJS.Workbook();
@@ -867,12 +909,856 @@ export async function exportFormattedDashboardReport(options: DashboardReportOpt
   ws.getColumn(6).width = 16;
   ws.getColumn(7).width = 22;
 
+  if (itStats) {
+    addITDiagnosticsWorksheet(workbook, itStats, transactionCount, 'Padrões e Comparativos');
+  }
+
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = 'Dashboard_Auditoria_Duplicidades_Formatado.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}
+
+export function addITDiagnosticsWorksheet(
+  workbook: ExcelJS.Workbook, 
+  itStats: ITDiagnosticsStats, 
+  transactionCount: number,
+  sheetName: string = 'Padrões e Comparativos'
+) {
+  const ws = workbook.addWorksheet(sheetName, {
+    views: [{ showGridLines: true }]
+  });
+
+  const thinBorder = {
+    top: { style: 'thin' as const, color: { argb: 'CBD5E1' } },
+    bottom: { style: 'thin' as const, color: { argb: 'CBD5E1' } },
+    left: { style: 'thin' as const, color: { argb: 'CBD5E1' } },
+    right: { style: 'thin' as const, color: { argb: 'CBD5E1' } }
+  };
+
+  // Header Banner
+  ws.mergeCells('A1:G1');
+  const tit = ws.getCell('A1');
+  tit.value = 'ANÁLISE ESTATÍSTICA DE PADRÕES E CRUZAMENTO DE DUPLICIDADES';
+  tit.font = { name: 'Calibri', size: 13, bold: true, color: { argb: 'FFFFFFFF' } };
+  tit.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0F172A' } }; // Slate 900
+  tit.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(1).height = 34;
+
+  ws.mergeCells('A2:G2');
+  const sub = ws.getCell('A2');
+  sub.value = 'Relatório analítico de cruzamento de dados: volumetria por dias da semana, evolução mensal, turnos do dia, beneficiários recorrentes e situação.';
+  sub.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FFE2E8F0' } };
+  sub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E293B' } };
+  sub.alignment = { vertical: 'middle', horizontal: 'center' };
+  ws.getRow(2).height = 24;
+
+  // Row 4-5: Cards Rápidos de Resumo Estatístico
+  const cards = [
+    { label: 'Grupos Analisados', val: `${itStats.totalGroups} (${transactionCount} reg.)`, bg: '1E293B', col: 'A', endCol: 'A' },
+    { label: 'Simultâneos (0m)', val: `${itStats.deltaZeroCount} (${itStats.instantPercent}%)`, bg: '7F1D1D', col: 'B', endCol: 'C' },
+    { label: 'Micro-intervalo (1-5m)', val: `${itStats.delta1to5Count} (${itStats.microPercent}%)`, bg: '92400E', col: 'D', endCol: 'E' },
+    { label: 'Concentração Prestador Líder', val: `${itStats.topProviderConcentrationPercent}% (${(itStats.topProviderName || 'N/A').substring(0, 18)})`, bg: '065F46', col: 'F', endCol: 'G' }
+  ];
+
+  ws.getRow(4).height = 18;
+  ws.getRow(5).height = 26;
+  cards.forEach(card => {
+    if (card.col !== card.endCol) {
+      ws.mergeCells(`${card.col}4:${card.endCol}4`);
+      ws.mergeCells(`${card.col}5:${card.endCol}5`);
+    }
+    const c1 = ws.getCell(`${card.col}4`);
+    c1.value = card.label.toUpperCase();
+    c1.font = { name: 'Calibri', size: 8, bold: true, color: { argb: 'FF64748B' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F1F5F9' } };
+    c1.alignment = { vertical: 'middle', horizontal: 'center' };
+    c1.border = thinBorder;
+
+    const c2 = ws.getCell(`${card.col}5`);
+    c2.value = card.val;
+    c2.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+    c2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: card.bg } };
+    c2.alignment = { vertical: 'middle', horizontal: 'center' };
+    c2.border = thinBorder;
+  });
+
+  let curRow = 7;
+
+  // Tabela 1: Comparativo por Dia da Semana
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t1 = ws.getCell(`A${curRow}`);
+  t1.value = '1. COMPARATIVO DE INCIDÊNCIA POR DIA DA SEMANA';
+  t1.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0369A1' } }; // Sky 700
+  t1.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'DIA DA SEMANA';
+  ws.getCell(`D${curRow}`).value = 'QUANTIDADE';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '075985' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.dayOfWeekDistribution || []).forEach((dow, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = dow.dayName;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = dow.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0284C7' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${dow.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((dow.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${dow.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF0284C7' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 2: Distribuição por Turnos do Dia
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t2 = ws.getCell(`A${curRow}`);
+  t2.value = '2. DISTRIBUIÇÃO DE DUPLICIDADES POR TURNO DO DIA';
+  t2.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t2.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'B45309' } }; // Amber 700
+  t2.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'TURNO DO DIA';
+  ws.getCell(`D${curRow}`).value = 'OCORRÊNCIAS';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92400E' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.shiftDistribution || []).forEach((sh, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = sh.shiftName;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = sh.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFB45309' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${sh.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((sh.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${sh.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FFB45309' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 3: Beneficiários / Pacientes com Maior Recorrência (Top 10)
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t3 = ws.getCell(`A${curRow}`);
+  t3.value = '3. PACIENTES / BENEFICIÁRIOS COM MAIOR RECORRÊNCIA DE DUPLICIDADES (TOP 10)';
+  t3.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '047857' } }; // Emerald 700
+  t3.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'NOME / MATRÍCULA DO BENEFICIÁRIO';
+  ws.getCell(`D${curRow}`).value = 'GRUPOS DUPLICADOS';
+  ws.getCell(`E${curRow}`).value = '% SHARE';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'NÍVEL DE RECORRÊNCIA';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '065F46' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  const topBeneficiaries = (itStats.topBeneficiariesList || []).slice(0, 10);
+  topBeneficiaries.forEach((b, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = `${idx + 1}. ${b.beneficiary}`;
+    c1.font = { name: 'Calibri', size: 9, bold: idx === 0, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = b.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF047857' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${b.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((b.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${b.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF047857' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 4: Distribuição por Situação / Status da Transação
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t4 = ws.getCell(`A${curRow}`);
+  t4.value = '4. DISTRIBUIÇÃO POR SITUAÇÃO / STATUS DA TRANSAÇÃO';
+  t4.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4338CA' } }; // Indigo 700
+  t4.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'SITUAÇÃO / STATUS';
+  ws.getCell(`D${curRow}`).value = 'OCORRÊNCIAS';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '3730A3' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.situationsDistribution || []).forEach((st, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = st.situation;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = st.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF4338CA' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${st.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((st.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${st.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF4338CA' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 5: Concentração por Prestador
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t5 = ws.getCell(`A${curRow}`);
+  t5.value = '5. CONCENTRAÇÃO DE VOLUME POR PRESTADOR (TOP 10 MAIORES VOLUMES)';
+  t5.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0F766E' } }; // Teal 700
+  t5.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'NOME DO PRESTADOR';
+  ws.getCell(`D${curRow}`).value = 'VOLUME DUPLICADO';
+  ws.getCell(`E${curRow}`).value = '% SHARE';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'INDICADOR VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0D9488' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  const topProviders = (itStats.topProvidersList || []).slice(0, 10);
+  topProviders.forEach((p, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = `${idx + 1}. ${p.provider}`;
+    c1.font = { name: 'Calibri', size: 9, bold: idx === 0, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = p.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F766E' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${p.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((p.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${p.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF0F766E' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 6: Ocorrência por Procedimento
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t6 = ws.getCell(`A${curRow}`);
+  t6.value = '6. OCORRÊNCIA FREQUENCIAL POR PROCEDIMENTO (TOP 10 MAIORES VOLUMES)';
+  t6.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '4338CA' } };
+  t6.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'NOME DO PROCEDIMENTO';
+  ws.getCell(`D${curRow}`).value = 'VOLUME DUPLICADO';
+  ws.getCell(`E${curRow}`).value = '% SHARE';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'PROPORÇÃO FREQUENCIAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '3730A3' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  const topProcedures = (itStats.topProceduresList || []).slice(0, 10);
+  topProcedures.forEach((pr, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = `${idx + 1}. ${pr.procedure}`;
+    c1.font = { name: 'Calibri', size: 9, bold: idx === 0, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = pr.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF4338CA' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${pr.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((pr.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${pr.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF4338CA' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 7: Comparativo por Dia do Mês (Dias 01 a 31)
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t7 = ws.getCell(`A${curRow}`);
+  t7.value = '7. COMPARATIVO DE INCIDÊNCIA POR DIA DO MÊS (PADRÃO MENSAL DIAS 01 A 31)';
+  t7.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '047857' } }; // Emerald 700
+  t7.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'DIA DO MÊS';
+  ws.getCell(`D${curRow}`).value = 'QUANTIDADE';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '065F46' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.dayOfMonthDistribution || []).forEach((dom, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = dom.dayLabel;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = dom.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF047857' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${dom.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((dom.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${dom.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF047857' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 8: Análise de Ciclo Mensal
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t8 = ws.getCell(`A${curRow}`);
+  t8.value = '8. DISTRIBUIÇÃO POR CICLO DO MÊS (INÍCIO, MEIO E FECHAMENTO)';
+  t8.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t8.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'B45309' } };
+  t8.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'ETAPA DO MÊS';
+  ws.getCell(`D${curRow}`).value = 'QUANTIDADE';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '92400E' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.monthCycleDistribution || []).forEach((cy, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = cy.cycleName;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = cy.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFB45309' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${cy.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((cy.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${cy.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FFB45309' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 9: Evolução Temporal entre Meses
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t9 = ws.getCell(`A${curRow}`);
+  t9.value = '9. EVOLUÇÃO TEMPORAL ENTRE MESES (COMPARAÇÃO MENSAL)';
+  t9.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t9.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1D4ED8' } };
+  t9.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'MÊS / ANO';
+  ws.getCell(`D${curRow}`).value = 'OCORRÊNCIAS';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'DISTRIBUIÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '1E3A8A' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  (itStats.monthlyDistribution || []).forEach((m, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = m.monthLabel;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = m.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF1D4ED8' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = `${m.percent}%`;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const barBlocks = Math.round((m.percent / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${m.percent}%)`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF1D4ED8' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 10: Intervalo Temporal Delta T
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t10 = ws.getCell(`A${curRow}`);
+  t10.value = '10. JANELA DE INTERVALO TEMPORAL ENTRE OCORRÊNCIAS (DELTA T)';
+  t10.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t10.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0369A1' } };
+  t10.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'FAIXA DE TEMPO';
+  ws.getCell(`D${curRow}`).value = 'CASOS';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'CATEGORIA';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '075985' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  const dtRows = [
+    { label: 'Δt = 0 min (Simultâneo / Mesmo Minuto)', count: itStats.deltaZeroCount, pct: `${itStats.instantPercent}%`, cat: 'Crítico (Bem Provável)' },
+    { label: 'Δt = 1 a 5 min (Micro-intervalo)', count: itStats.delta1to5Count, pct: `${itStats.microPercent}%`, cat: 'Alto Risco' },
+    { label: 'Δt = 6 a 30 min (Mesmo Turno)', count: itStats.delta6to30Count, pct: `${itStats.shortPercent}%`, cat: 'Risco Moderado' },
+    { label: 'Δt > 30 min (Reemissão Tardia)', count: itStats.deltaOver30Count, pct: `${itStats.extendedPercent}%`, cat: 'Acompanhamento' }
+  ];
+
+  dtRows.forEach((dtr, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = dtr.label;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = dtr.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0369A1' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = dtr.pct;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const cF = r.getCell(6);
+    cF.value = dtr.cat;
+    cF.font = { name: 'Calibri', size: 8.5, bold: true, color: { argb: idx === 0 ? 'FF991B1B' : 'FF0369A1' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: idx === 0 ? 'FEE2E2' : bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'center' };
+    cF.border = thinBorder;
+  });
+
+  // Tabela 11: Comportamento de Identificadores
+  curRow += 2;
+  ws.mergeCells(`A${curRow}:G${curRow}`);
+  const t11 = ws.getCell(`A${curRow}`);
+  t11.value = '11. COMPORTAMENTO DE IDENTIFICADORES (PROTOCOLOS E REMESSAS)';
+  t11.font = { name: 'Calibri', size: 10, bold: true, color: { argb: 'FFFFFFFF' } };
+  t11.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0F766E' } };
+  t11.alignment = { vertical: 'middle', horizontal: 'left' };
+  ws.getRow(curRow).height = 24;
+
+  curRow++;
+  ws.mergeCells(`A${curRow}:C${curRow}`);
+  ws.getCell(`A${curRow}`).value = 'CENÁRIO DE IDENTIFICADOR';
+  ws.getCell(`D${curRow}`).value = 'CASOS';
+  ws.getCell(`E${curRow}`).value = '% DO TOTAL';
+  ws.mergeCells(`F${curRow}:G${curRow}`);
+  ws.getCell(`F${curRow}`).value = 'PROPORÇÃO VISUAL';
+  ['A', 'D', 'E', 'F'].forEach(cKey => {
+    const c = ws.getCell(`${cKey}${curRow}`);
+    c.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: '0D9488' } };
+    c.alignment = { vertical: 'middle', horizontal: 'center' };
+    c.border = thinBorder;
+  });
+  ws.getRow(curRow).height = 22;
+
+  const idRows = [
+    { label: 'Mesmo Número de Protocolo', count: itStats.sameProtocolCount, pct: `${itStats.sameProtocolPercent}%` },
+    { label: 'Protocolos Distintos Gerados', count: itStats.differentProtocolCount, pct: `${itStats.differentProtocolPercent}%` },
+    { label: 'Mesma Remessa de Faturamento', count: itStats.sameRemessaCount, pct: `${itStats.sameRemessaPercent}%` },
+    { label: 'Remessas Diferentes / Lotes Distintos', count: itStats.differentRemessaCount, pct: `${itStats.differentRemessaPercent}%` }
+  ];
+
+  idRows.forEach((idr, idx) => {
+    curRow++;
+    ws.mergeCells(`A${curRow}:C${curRow}`);
+    ws.mergeCells(`F${curRow}:G${curRow}`);
+    const r = ws.getRow(curRow);
+    r.height = 20;
+    const isAlt = idx % 2 === 1;
+    const bgRow = isAlt ? 'F8FAFC' : 'FFFFFF';
+
+    const c1 = r.getCell(1);
+    c1.value = idr.label;
+    c1.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F172A' } };
+    c1.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    c1.alignment = { vertical: 'middle', horizontal: 'left' };
+    c1.border = thinBorder;
+
+    const cD = r.getCell(4);
+    cD.value = idr.count;
+    cD.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F766E' } };
+    cD.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cD.alignment = { vertical: 'middle', horizontal: 'center' };
+    cD.border = thinBorder;
+
+    const cE = r.getCell(5);
+    cE.value = idr.pct;
+    cE.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF334155' } };
+    cE.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cE.alignment = { vertical: 'middle', horizontal: 'center' };
+    cE.border = thinBorder;
+
+    const numPct = parseInt(idr.pct, 10) || 0;
+    const barBlocks = Math.round((numPct / 100) * 20);
+    const barStr = '█'.repeat(barBlocks) + '░'.repeat(Math.max(0, 20 - barBlocks));
+    const cF = r.getCell(6);
+    cF.value = `${barStr} (${idr.pct})`;
+    cF.font = { name: 'Courier New', size: 8.5, bold: true, color: { argb: 'FF0F766E' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bgRow } };
+    cF.alignment = { vertical: 'middle', horizontal: 'left' };
+    cF.border = thinBorder;
+  });
+
+  // Ajuste de larguras de colunas
+  ws.getColumn(1).width = 28;
+  ws.getColumn(2).width = 18;
+  ws.getColumn(3).width = 16;
+  ws.getColumn(4).width = 20;
+  ws.getColumn(5).width = 16;
+  ws.getColumn(6).width = 28;
+  ws.getColumn(7).width = 24;
+}
+
+export async function exportFormattedITReport(options: {
+  transactionCount: number;
+  itStats: ITDiagnosticsStats;
+  fileName?: string;
+}) {
+  const { transactionCount, itStats, fileName } = options;
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'AuditCheck HealthTech';
+
+  addITDiagnosticsWorksheet(workbook, itStats, transactionCount, 'Padrões e Comparativos');
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName ? `Padroes_Estatisticos_${fileName.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx` : 'Padroes_Estatisticos_Duplicidades.xlsx';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

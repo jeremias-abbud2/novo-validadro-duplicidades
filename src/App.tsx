@@ -21,11 +21,17 @@ import {
   Files,
   Plus,
   Layers,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Cpu,
+  Database,
+  Network,
+  Terminal,
+  ShieldAlert,
+  Wrench
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { exportFormattedExcelReport, exportFormattedDashboardReport } from './lib/excelExport';
+import { exportFormattedExcelReport, exportFormattedDashboardReport, exportFormattedITReport, ITDiagnosticsStats } from './lib/excelExport';
 
 // Types for the report data
 interface TransactionRow {
@@ -106,11 +112,12 @@ export default function App() {
     conselhoExecutantes: [],
   });
   
-  const [activeTab, setActiveTab] = useState<'table' | 'dashboard'>('table');
+  const [activeTab, setActiveTab] = useState<'table' | 'dashboard' | 'itDiagnostics'>('table');
   const [uploadMode, setUploadMode] = useState<'single' | 'multi'>('single');
   const [batchFiles, setBatchFiles] = useState<File[]>([]);
   const [sourceFiles, setSourceFiles] = useState<string[]>([]);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
+  const [deduplicationMessage, setDeduplicationMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const multiFileInputRef = useRef<HTMLInputElement>(null);
@@ -290,6 +297,12 @@ export default function App() {
         'Nº PROTOCOLO', 'NO_PROTOCOLO', 'NR_PROTOCOLO', 'NR PROTOCOLO', 'N_PROTOCOLO',
         'NUM_PROTOCOLO', 'PROTOCOLO_NUMERO', 'PROTOCOLO_NUM', 'NUM_PROT', 'COD_PROTOCOLO',
         'CODIGO_PROTOCOLO', 'PROTOCOLO_TRANSACAO', 'PROTOCOLO_ATENDIMENTO', 'NUM_PROTOCOLO_TRANSACAO'
+      ],
+      'ID_TRANSACAO': [
+        'TRANSACAO', 'NUM_TRANSACAO', 'NUMERO_TRANSACAO', 'NR_TRANSACAO', 'NO_TRANSACAO',
+        'COD_TRANSACAO', 'CODIGO_TRANSACAO', 'ID_TRANSACAO', 'GUIA', 'NUMERO_GUIA',
+        'NUM_GUIA', 'NR_GUIA', 'SENHA', 'NUMERO_AUTORIZACAO', 'NUM_AUTORIZACAO',
+        'AUTORIZACAO', 'ATENDIMENTO', 'NUM_ATENDIMENTO', 'NUMERO_ATENDIMENTO'
       ]
     };
 
@@ -324,6 +337,174 @@ export default function App() {
     candidates.sort((a, b) => b.score - a.score);
     
     return candidates.length > 0 ? row[candidates[0].key] : undefined;
+  };
+
+  const normalizeText = (v: any) => String(v ?? '').trim().toLowerCase();
+  const normalizeRaw = (v: any) => String(v ?? '').trim();
+  const normalizeNum = (v: any) => {
+    if (v === undefined || v === null || v === '') return '';
+    const n = parseFloat(String(v));
+    return isNaN(n) ? normalizeText(v) : String(n);
+  };
+
+  const robustNormalize = (s: any) => {
+    if (s === undefined || s === null || s === '') return '';
+    return String(s)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remove acentos
+      .toUpperCase()
+      .replace(/\s+/g, '') // Remove espaços
+      .replace(/[^A-Z0-9]/g, ''); // Remove tudo que não é alfanumérico
+  };
+
+  const hasRemessaValue = (row: TransactionRow): boolean => {
+    const remVal = getColValue(row, 'REMESSA');
+    if (remVal === undefined || remVal === null) return false;
+    const str = String(remVal).trim();
+    return str !== '' && str !== '0' && str !== '-' && str !== '--' && str.toLowerCase() !== 'null' && str.toLowerCase() !== 'undefined';
+  };
+
+  const isSameAttendance = (rowA: TransactionRow, rowB: TransactionRow): boolean => {
+    // 1. Se ambos possuírem Protocolo / Guia / ID de Transação, compara diretamente
+    const protA = robustNormalize(getColValue(rowA, 'PROTOCOLO') || getColValue(rowA, 'ID_TRANSACAO'));
+    const protB = robustNormalize(getColValue(rowB, 'PROTOCOLO') || getColValue(rowB, 'ID_TRANSACAO'));
+    
+    const bMatA = robustNormalize(getColValue(rowA, 'BENE_MATRICULA'));
+    const bMatB = robustNormalize(getColValue(rowB, 'BENE_MATRICULA'));
+    const bNomeA = robustNormalize(getColValue(rowA, 'BENE_NOME'));
+    const bNomeB = robustNormalize(getColValue(rowB, 'BENE_NOME'));
+
+    // Beneficiário deve coincidir (por matrícula ou por nome)
+    const matchBene = (bMatA && bMatB && bMatA === bMatB) || 
+                      (bNomeA && bNomeB && bNomeA === bNomeB) || 
+                      (!bMatA && !bMatB && bNomeA === bNomeB) || 
+                      (!bNomeA && !bNomeB && bMatA === bMatB);
+    if (!matchBene) return false;
+
+    const procA = robustNormalize(getColValue(rowA, 'PROCEDIMENTO'));
+    const procB = robustNormalize(getColValue(rowB, 'PROCEDIMENTO'));
+    if (procA !== procB) return false;
+
+    const dateA = normalizeDate(getColValue(rowA, 'DATA')).date;
+    const dateB = normalizeDate(getColValue(rowB, 'DATA')).date;
+    if (dateA && dateB && dateA !== dateB) return false;
+
+    // Se ambos tiverem número de protocolo/guia preenchido, é o critério decisivo
+    if (protA && protB) {
+      return protA === protB;
+    }
+
+    // 2. Prestador (Matrícula ou Nome)
+    const pMatA = robustNormalize(getColValue(rowA, 'PREST_MATRICULA'));
+    const pMatB = robustNormalize(getColValue(rowB, 'PREST_MATRICULA'));
+    const pNomeA = robustNormalize(getColValue(rowA, 'PREST_NOME'));
+    const pNomeB = robustNormalize(getColValue(rowB, 'PREST_NOME'));
+    if (pMatA && pMatB && pMatA !== pMatB) return false;
+    if (pNomeA && pNomeB && pNomeA !== pNomeB && !pMatA && !pMatB) return false;
+
+    // 3. Quantidade
+    const qtdA = normalizeNum(getColValue(rowA, 'QUANTIDADE'));
+    const qtdB = normalizeNum(getColValue(rowB, 'QUANTIDADE'));
+    if (qtdA && qtdB && qtdA !== qtdB) return false;
+
+    // 4. CRM / Conselho Executante (se presente em ambos)
+    const crmA = robustNormalize(getColValue(rowA, 'NUMERO_CONSELHO_EXECUTANTE') || getColValue(rowA, 'CONSELHO'));
+    const crmB = robustNormalize(getColValue(rowB, 'NUMERO_CONSELHO_EXECUTANTE') || getColValue(rowB, 'CONSELHO'));
+    if (crmA && crmB && crmA !== crmB) return false;
+
+    // 5. Horário
+    const timeA = getRowTime(rowA);
+    const timeB = getRowTime(rowB);
+    const hasTimeA = timeA && timeA !== '--:--' && timeA.includes(':');
+    const hasTimeB = timeB && timeB !== '--:--' && timeB.includes(':');
+
+    // Se ambos os relatórios têm horário informado, os horários DEVEM coincidir para ser o mesmo atendimento
+    if (hasTimeA && hasTimeB) {
+      return timeA === timeB;
+    }
+
+    return true;
+  };
+
+  const consolidateMultipleFileRows = (rows: TransactionRow[]): { consolidatedRows: TransactionRow[]; deduplicatedCount: number } => {
+    // 1. Identifica quais linhas possuem valor de remessa válido
+    const rowsWithRemessa: TransactionRow[] = [];
+    const rowsWithoutRemessa: TransactionRow[] = [];
+
+    rows.forEach(r => {
+      if (hasRemessaValue(r)) {
+        rowsWithRemessa.push(r);
+      } else {
+        rowsWithoutRemessa.push(r);
+      }
+    });
+
+    // Se não há linhas com remessa ou não há linhas sem remessa, mantém todas
+    if (rowsWithRemessa.length === 0 || rowsWithoutRemessa.length === 0) {
+      return { consolidatedRows: rows, deduplicatedCount: 0 };
+    }
+
+    // 2. Indexa as linhas com remessa em baldes (buckets) por Beneficiário + Procedimento + Data
+    const remessaBuckets = new Map<string, { row: TransactionRow; matched: boolean }[]>();
+
+    rowsWithRemessa.forEach(row => {
+      const bMat = robustNormalize(getColValue(row, 'BENE_MATRICULA'));
+      const bNome = robustNormalize(getColValue(row, 'BENE_NOME'));
+      const proc = robustNormalize(getColValue(row, 'PROCEDIMENTO'));
+      const { date } = normalizeDate(getColValue(row, 'DATA'));
+      
+      const key = `${bMat || bNome}|${proc}|${date}`;
+      if (!remessaBuckets.has(key)) {
+        remessaBuckets.set(key, []);
+      }
+      remessaBuckets.get(key)!.push({ row, matched: false });
+    });
+
+    // 3. Avalia as linhas sem remessa: se coincidirem com um atendimento que já possui remessa,
+    // descarta a versão sem remessa ("apenas traga o resultado com remessa")
+    const keptRowsWithoutRemessa: TransactionRow[] = [];
+    let deduplicatedCount = 0;
+
+    rowsWithoutRemessa.forEach(rowNoRem => {
+      const bMat = robustNormalize(getColValue(rowNoRem, 'BENE_MATRICULA'));
+      const bNome = robustNormalize(getColValue(rowNoRem, 'BENE_NOME'));
+      const proc = robustNormalize(getColValue(rowNoRem, 'PROCEDIMENTO'));
+      const { date } = normalizeDate(getColValue(rowNoRem, 'DATA'));
+      const key = `${bMat || bNome}|${proc}|${date}`;
+
+      const candidates = remessaBuckets.get(key);
+      let matched = false;
+
+      if (candidates && candidates.length > 0) {
+        for (const cand of candidates) {
+          if (!cand.matched && isSameAttendance(rowNoRem, cand.row)) {
+            matched = true;
+            cand.matched = true;
+            deduplicatedCount++;
+
+            // Se o registro com remessa não possuía hora e o sem remessa possuía, complementa a hora
+            const candTime = getRowTime(cand.row);
+            const noRemTime = getRowTime(rowNoRem);
+            if ((!candTime || candTime === '--:--') && noRemTime && noRemTime !== '--:--') {
+              const rawDate = cand.row['DATA'] || cand.row['DATA DA TRAN'] || cand.row['DATA_TRAN'];
+              if (typeof rawDate === 'string' && !rawDate.includes(':')) {
+                cand.row['HORA'] = noRemTime;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      if (!matched) {
+        keptRowsWithoutRemessa.push(rowNoRem);
+      }
+    });
+
+    return {
+      consolidatedRows: [...rowsWithRemessa, ...keptRowsWithoutRemessa],
+      deduplicatedCount
+    };
   };
 
   const parseFileToRows = async (file: File): Promise<TransactionRow[]> => {
@@ -484,10 +665,19 @@ export default function App() {
         setError(`Aviso: ${failedFiles.length} arquivo(s) não puderam ser lidos (${failedFiles.join(', ')}). Os demais foram processados com sucesso.`);
       }
 
-      setProcessingStatus(`Cruzando ${allRows.length} registros entre todos os arquivos...`);
-      setData(allRows);
-      setTransactionCount(allRows.length);
-      analyzeDuplicates(allRows);
+      // Se houver mais de um relatório, unifica atendimentos coincidentes priorizando a versão com remessa
+      const { consolidatedRows, deduplicatedCount } = consolidateMultipleFileRows(allRows);
+
+      if (deduplicatedCount > 0) {
+        setDeduplicationMessage(`${deduplicatedCount} atendimento(s) coincidente(s) entre relatórios foram unificados, trazendo apenas o resultado com remessa.`);
+      } else {
+        setDeduplicationMessage(null);
+      }
+
+      setProcessingStatus(`Cruzando ${consolidatedRows.length} registros entre todos os arquivos...`);
+      setData(consolidatedRows);
+      setTransactionCount(consolidatedRows.length);
+      analyzeDuplicates(consolidatedRows);
     } catch (err: any) {
       setError(err.message || 'Erro ao processar lote consolidado de arquivos.');
     } finally {
@@ -771,6 +961,253 @@ export default function App() {
     return { topDays, topHours, topProviders, topProcedures };
   }, [filteredDuplicates]);
 
+  // Diagnóstico Estatístico de Padrões e Comparativos para Auditoria
+  const itStats = useMemo<ITDiagnosticsStats>(() => {
+    let deltaZeroCount = 0;
+    let delta1to5Count = 0;
+    let delta6to30Count = 0;
+    let deltaOver30Count = 0;
+
+    let sameProtocolCount = 0;
+    let differentProtocolCount = 0;
+    let noProtocolCount = 0;
+
+    let sameRemessaCount = 0;
+    let differentRemessaCount = 0;
+    let noRemessaCount = 0;
+
+    const providerCounts: Record<string, number> = {};
+    const procedureCounts: Record<string, number> = {};
+    const beneficiaryCounts: Record<string, number> = {};
+    const situationCounts: Record<string, number> = {};
+    const dayOfWeekCounts: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0 };
+    const monthCounts: Record<string, number> = {};
+    const dayOfMonthCounts: Record<number, number> = {};
+    for (let i = 1; i <= 31; i++) dayOfMonthCounts[i] = 0;
+
+    const monthCycleCounts: Record<string, number> = {
+      'Início do Mês (Dias 01 a 10)': 0,
+      'Meio do Mês (Dias 11 a 20)': 0,
+      'Fechamento de Mês (Dias 21 a 31)': 0
+    };
+
+    const shiftCounts: Record<string, number> = {
+      'Madrugada (00h-06h)': 0,
+      'Manhã (06h-12h)': 0,
+      'Tarde (12h-18h)': 0,
+      'Noite (18h-24h)': 0
+    };
+
+    filteredDuplicates.forEach(group => {
+      // Delta analysis
+      const info = getGroupTimeInterval(group.rows);
+      if (info.minDiff === 0) {
+        deltaZeroCount++;
+      } else if (info.minDiff !== null && info.minDiff > 0 && info.minDiff <= 5) {
+        delta1to5Count++;
+      } else if (info.minDiff !== null && info.minDiff > 5 && info.minDiff <= 30) {
+        delta6to30Count++;
+      } else {
+        deltaOver30Count++;
+      }
+
+      // Protocol analysis
+      const protocols = new Set<string>();
+      group.rows.forEach(r => {
+        const p = getColValue(r, 'PROTOCOLO');
+        if (p !== undefined && p !== null && String(p).trim() !== '') {
+          protocols.add(String(p).trim());
+        }
+      });
+      if (protocols.size === 0) {
+        noProtocolCount++;
+      } else if (protocols.size === 1) {
+        sameProtocolCount++;
+      } else {
+        differentProtocolCount++;
+      }
+
+      // Remessa analysis
+      const remessas = new Set<string>();
+      group.rows.forEach(r => {
+        const rem = getColValue(r, 'REMESSA');
+        if (rem !== undefined && rem !== null && String(rem).trim() !== '') {
+          remessas.add(String(rem).trim());
+        }
+      });
+      if (remessas.size === 0) {
+        noRemessaCount++;
+      } else if (remessas.size === 1) {
+        sameRemessaCount++;
+      } else {
+        differentRemessaCount++;
+      }
+
+      // Provider concentration
+      const prov = group.params.prestador || 'Não informado';
+      providerCounts[prov] = (providerCounts[prov] || 0) + 1;
+
+      // Procedure frequency
+      const proc = group.params.procedimento || 'Não informado';
+      procedureCounts[proc] = (procedureCounts[proc] || 0) + 1;
+
+      // Beneficiary frequency
+      const bene = group.params.beneficiario || 'Não informado';
+      beneficiaryCounts[bene] = (beneficiaryCounts[bene] || 0) + 1;
+
+      // Situation frequency
+      const sit = group.params.situacao || 'Não informada';
+      situationCounts[sit] = (situationCounts[sit] || 0) + 1;
+
+      // Date analysis (Day of week, Month & Day of month/cycle)
+      const dStr = group.params.data || '';
+      if (dStr) {
+        const parts = dStr.split('/');
+        if (parts.length === 3) {
+          const dd = parseInt(parts[0], 10);
+          const mm = parseInt(parts[1], 10) - 1;
+          const yyyy = parseInt(parts[2], 10);
+          if (!isNaN(dd) && !isNaN(mm) && !isNaN(yyyy)) {
+            const dt = new Date(yyyy, mm, dd);
+            const dow = dt.getDay();
+            if (!isNaN(dow)) {
+              dayOfWeekCounts[dow] = (dayOfWeekCounts[dow] || 0) + 1;
+            }
+            const monthNames = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+            const mKey = `${monthNames[mm] || 'Mês'}/${yyyy}`;
+            monthCounts[mKey] = (monthCounts[mKey] || 0) + 1;
+
+            if (dd >= 1 && dd <= 31) {
+              dayOfMonthCounts[dd] = (dayOfMonthCounts[dd] || 0) + 1;
+              if (dd <= 10) monthCycleCounts['Início do Mês (Dias 01 a 10)']++;
+              else if (dd <= 20) monthCycleCounts['Meio do Mês (Dias 11 a 20)']++;
+              else monthCycleCounts['Fechamento de Mês (Dias 21 a 31)']++;
+            }
+          }
+        }
+      }
+
+      // Shift analysis
+      group.rows.forEach(r => {
+        const t = getRowTime(r);
+        if (t && t.includes(':')) {
+          const hh = parseInt(t.split(':')[0], 10);
+          if (!isNaN(hh)) {
+            if (hh >= 0 && hh < 6) shiftCounts['Madrugada (00h-06h)']++;
+            else if (hh >= 6 && hh < 12) shiftCounts['Manhã (06h-12h)']++;
+            else if (hh >= 12 && hh < 18) shiftCounts['Tarde (12h-18h)']++;
+            else if (hh >= 18 && hh < 24) shiftCounts['Noite (18h-24h)']++;
+          }
+        }
+      });
+    });
+
+    const total = filteredDuplicates.length;
+    const sortedProviders = Object.entries(providerCounts).sort((a, b) => b[1] - a[1]);
+    const topProviderName = sortedProviders.length > 0 ? sortedProviders[0][0] : 'Nenhum';
+    const topProviderCount = sortedProviders.length > 0 ? sortedProviders[0][1] : 0;
+    const topProviderConcentrationPercent = total > 0 ? Math.round((topProviderCount / total) * 100) : 0;
+
+    const top3Sum = sortedProviders.slice(0, 3).reduce((acc, [, c]) => acc + c, 0);
+    const top3ProvidersSharePercent = total > 0 ? Math.round((top3Sum / total) * 100) : 0;
+
+    const sortedProcedures = Object.entries(procedureCounts).sort((a, b) => b[1] - a[1]);
+    const sortedBeneficiaries = Object.entries(beneficiaryCounts).sort((a, b) => b[1] - a[1]);
+    const sortedSituations = Object.entries(situationCounts).sort((a, b) => b[1] - a[1]);
+
+    const dayLabels = ['Domingo', 'Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado'];
+    const dayOfWeekDistribution = [1, 2, 3, 4, 5, 6, 0].map(idx => ({
+      dayName: dayLabels[idx],
+      count: dayOfWeekCounts[idx] || 0,
+      percent: total > 0 ? Math.round(((dayOfWeekCounts[idx] || 0) / total) * 100) : 0
+    }));
+
+    const dayOfMonthDistribution = Array.from({ length: 31 }, (_, i) => i + 1).map(d => ({
+      dayNum: d,
+      dayLabel: `Dia ${String(d).padStart(2, '0')}`,
+      count: dayOfMonthCounts[d] || 0,
+      percent: total > 0 ? Math.round(((dayOfMonthCounts[d] || 0) / total) * 100) : 0
+    }));
+
+    const monthCycleDistribution = Object.entries(monthCycleCounts).map(([cycleName, count]) => ({
+      cycleName,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    const monthlyDistribution = Object.entries(monthCounts).map(([monthLabel, count]) => ({
+      monthLabel,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    const totalShiftOccurrences = Object.values(shiftCounts).reduce((acc, c) => acc + c, 0);
+    const shiftDistribution = Object.entries(shiftCounts).map(([shiftName, count]) => ({
+      shiftName,
+      count,
+      percent: totalShiftOccurrences > 0 ? Math.round((count / totalShiftOccurrences) * 100) : 0
+    }));
+
+    const topProvidersList = sortedProviders.slice(0, 10).map(([provider, count]) => ({
+      provider,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    const topProceduresList = sortedProcedures.slice(0, 10).map(([procedure, count]) => ({
+      procedure,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    const topBeneficiariesList = sortedBeneficiaries.slice(0, 10).map(([beneficiary, count]) => ({
+      beneficiary,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    const situationsDistribution = sortedSituations.slice(0, 10).map(([situation, count]) => ({
+      situation,
+      count,
+      percent: total > 0 ? Math.round((count / total) * 100) : 0
+    }));
+
+    return {
+      totalGroups: total,
+      deltaZeroCount,
+      instantPercent: total > 0 ? Math.round((deltaZeroCount / total) * 100) : 0,
+      delta1to5Count,
+      microPercent: total > 0 ? Math.round((delta1to5Count / total) * 100) : 0,
+      delta6to30Count,
+      shortPercent: total > 0 ? Math.round((delta6to30Count / total) * 100) : 0,
+      deltaOver30Count,
+      extendedPercent: total > 0 ? Math.round((deltaOver30Count / total) * 100) : 0,
+      sameProtocolCount,
+      sameProtocolPercent: total > 0 ? Math.round((sameProtocolCount / total) * 100) : 0,
+      differentProtocolCount,
+      differentProtocolPercent: total > 0 ? Math.round((differentProtocolCount / total) * 100) : 0,
+      noProtocolCount,
+      sameRemessaCount,
+      sameRemessaPercent: total > 0 ? Math.round((sameRemessaCount / total) * 100) : 0,
+      differentRemessaCount,
+      differentRemessaPercent: total > 0 ? Math.round((differentRemessaCount / total) * 100) : 0,
+      noRemessaCount,
+      topProviderConcentrationPercent,
+      top3ProvidersSharePercent,
+      topProviderName,
+      topProviderCount,
+      topProvidersList,
+      topProceduresList,
+      dayOfWeekDistribution,
+      dayOfMonthDistribution,
+      monthCycleDistribution,
+      monthlyDistribution,
+      shiftDistribution,
+      topBeneficiariesList,
+      situationsDistribution
+    };
+  }, [filteredDuplicates]);
+
   const exportDashboardReport = () => {
     if (filteredDuplicates.length === 0) return;
 
@@ -794,6 +1231,33 @@ export default function App() {
 
     const wsProv = XLSX.utils.json_to_sheet(dashboardStats.topProviders.map(p => ({ 'Prestador': p.provider, 'Duplicidades': p.count })));
     XLSX.utils.book_append_sheet(wb, wsProv, "Top Prestadores");
+
+    const wsDow = XLSX.utils.json_to_sheet(itStats.dayOfWeekDistribution.map(d => ({ 'Dia da Semana': d.dayName, 'Ocorrências': d.count, 'Percentual': `${d.percent}%` })));
+    XLSX.utils.book_append_sheet(wb, wsDow, "Dia da Semana");
+
+    const wsDom = XLSX.utils.json_to_sheet(itStats.dayOfMonthDistribution.map(d => ({ 'Dia do Mês': d.dayLabel, 'Ocorrências': d.count, 'Percentual': `${d.percent}%` })));
+    XLSX.utils.book_append_sheet(wb, wsDom, "Dias do Mes (01-31)");
+
+    const wsCycle = XLSX.utils.json_to_sheet(itStats.monthCycleDistribution.map(c => ({ 'Etapa do Mês': c.cycleName, 'Ocorrências': c.count, 'Percentual': `${c.percent}%` })));
+    XLSX.utils.book_append_sheet(wb, wsCycle, "Ciclo Mensal");
+
+    const wsShift = XLSX.utils.json_to_sheet(itStats.shiftDistribution.map(s => ({ 'Turno': s.shiftName, 'Ocorrências': s.count, 'Percentual': `${s.percent}%` })));
+    XLSX.utils.book_append_sheet(wb, wsShift, "Turnos do Dia");
+
+    const itSheetData = [
+      { Métrica: 'Total de Duplicidades Filtradas', Valor: filteredDuplicates.length },
+      { Métrica: 'Duplicidades Simultâneas (Δt = 0m)', Valor: itStats.deltaZeroCount },
+      { Métrica: 'Micro-intervalo (1 a 5m)', Valor: itStats.delta1to5Count },
+      { Métrica: 'Mesma Sessão de Atendimento (6 a 30m)', Valor: itStats.delta6to30Count },
+      { Métrica: 'Reemissão Tardia (> 30m)', Valor: itStats.deltaOver30Count },
+      { Métrica: 'Mesmo Número de Protocolo', Valor: itStats.sameProtocolCount },
+      { Métrica: 'Protocolos Diferentes', Valor: itStats.differentProtocolCount },
+      { Métrica: 'Protocolo Não Informado', Valor: itStats.noProtocolCount },
+      { Métrica: 'Concentração Prestador Líder', Valor: `${itStats.topProviderConcentrationPercent}% (${itStats.topProviderName})` },
+      { Métrica: 'Concentração Top 3 Prestadores', Valor: `${itStats.top3ProvidersSharePercent}%` }
+    ];
+    const wsIT = XLSX.utils.json_to_sheet(itSheetData);
+    XLSX.utils.book_append_sheet(wb, wsIT, "Padroes_Comparativos");
 
     XLSX.writeFile(wb, isFiltered ? "Dashboard_Duplicidades_Filtradas.xlsx" : "Dashboard_Auditoria_Duplicidades.xlsx");
   };
@@ -877,6 +1341,22 @@ export default function App() {
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Duplicidades");
+
+    const itSheetData = [
+      { Métrica: 'Total de Duplicidades Filtradas', Valor: filteredDuplicates.length },
+      { Métrica: 'Duplicidades Simultâneas (Δt = 0m)', Valor: itStats.deltaZeroCount },
+      { Métrica: 'Micro-intervalo (1 a 5m)', Valor: itStats.delta1to5Count },
+      { Métrica: 'Mesma Sessão de Atendimento (6 a 30m)', Valor: itStats.delta6to30Count },
+      { Métrica: 'Reemissão Tardia (> 30m)', Valor: itStats.deltaOver30Count },
+      { Métrica: 'Mesmo Número de Protocolo', Valor: itStats.sameProtocolCount },
+      { Métrica: 'Protocolos Diferentes', Valor: itStats.differentProtocolCount },
+      { Métrica: 'Protocolo Não Informado', Valor: itStats.noProtocolCount },
+      { Métrica: 'Concentração Prestador Líder', Valor: `${itStats.topProviderConcentrationPercent}% (${itStats.topProviderName})` },
+      { Métrica: 'Concentração Top 3 Prestadores', Valor: `${itStats.top3ProvidersSharePercent}%` }
+    ];
+    const wsIT = XLSX.utils.json_to_sheet(itSheetData);
+    XLSX.utils.book_append_sheet(wb, wsIT, "Padroes_Comparativos");
+
     XLSX.writeFile(wb, "Relatorio_Duplicidades_Filtradas.xlsx");
   };
 
@@ -908,7 +1388,8 @@ export default function App() {
       normalizeDate,
       getGroupTimeInterval,
       getRowTime,
-      hasMultiOriginFiles: sourceFiles.length > 1
+      hasMultiOriginFiles: sourceFiles.length > 1,
+      itStats
     });
   };
 
@@ -918,7 +1399,17 @@ export default function App() {
       transactionCount: isFiltered ? filteredRowCount : transactionCount,
       duplicateGroups: filteredDuplicates,
       categoryStats,
-      dashboardStats
+      dashboardStats,
+      itStats
+    });
+  };
+
+  const handleExportFormattedIT = async () => {
+    if (filteredDuplicates.length === 0) return;
+    await exportFormattedITReport({
+      transactionCount: isFiltered ? filteredRowCount : transactionCount,
+      itStats,
+      fileName: fileName || 'Padrões e Comparativos'
     });
   };
 
@@ -942,6 +1433,7 @@ export default function App() {
     setSourceFiles([]);
     setBatchFiles([]);
     setProcessingStatus(null);
+    setDeduplicationMessage(null);
     setTransactionCount(0);
     resetFilters();
   };
@@ -1283,6 +1775,18 @@ export default function App() {
 
         {data && !isProcessing && (
           <div className="flex flex-col gap-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {deduplicationMessage && (
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-lg px-4 py-2.5 text-xs text-emerald-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                  <span>{deduplicationMessage}</span>
+                </div>
+                <span className="text-[9px] uppercase font-mono text-emerald-400 bg-emerald-500/20 border border-emerald-500/30 px-2 py-0.5 rounded self-start sm:self-auto font-semibold">
+                  Remessa Priorizada
+                </span>
+              </div>
+            )}
+
             {/* Visual Quantification & Tab Switcher Bar */}
             <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 bg-white/[0.02] border border-white/10 p-4 rounded-lg">
               <div className="flex items-center gap-3 overflow-x-auto">
@@ -1311,8 +1815,8 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('table')}
                   className={cn(
-                    "px-4 py-2 text-[10px] uppercase font-mono tracking-widest rounded border transition-all flex items-center gap-2",
-                    activeTab === 'table' ? "bg-white/15 border-white/30 text-white" : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                    "px-4 py-2 text-[10px] uppercase font-mono tracking-widest rounded border transition-all flex items-center gap-2 cursor-pointer",
+                    activeTab === 'table' ? "bg-white/15 border-white/30 text-white font-bold" : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
                   )}
                 >
                   <Search size={14} /> Listagem ({filteredDuplicates.length})
@@ -1320,55 +1824,149 @@ export default function App() {
                 <button
                   onClick={() => setActiveTab('dashboard')}
                   className={cn(
-                    "px-4 py-2 text-[10px] uppercase font-mono tracking-widest rounded border transition-all flex items-center gap-2",
-                    activeTab === 'dashboard' ? "bg-white/15 border-white/30 text-emerald-400 border-emerald-500/40" : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
+                    "px-4 py-2 text-[10px] uppercase font-mono tracking-widest rounded border transition-all flex items-center gap-2 cursor-pointer",
+                    activeTab !== 'table' ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-300 font-bold shadow-lg shadow-emerald-950/40" : "bg-white/5 border-white/10 text-gray-400 hover:text-white"
                   )}
                 >
-                  <BarChart3 size={14} /> Dashboard & Picos
+                  <BarChart3 size={14} /> Dashboard & Comparativos
                 </button>
               </div>
             </div>
 
-            {activeTab === 'dashboard' ? (
+            {activeTab !== 'table' ? (
               <div className="flex flex-col gap-6 animate-in fade-in duration-300">
                 {/* Dashboard Header & Export */}
-                <div className="flex justify-between items-center bg-white/[0.02] border border-white/10 px-6 py-4 rounded-lg">
+                <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-4 bg-white/[0.02] border border-white/10 px-6 py-5 rounded-lg">
                   <div>
-                    <h3 className="text-sm font-bold uppercase tracking-widest text-white flex items-center gap-2">
-                      <BarChart3 size={16} className="text-emerald-400" /> Dashboard Executivo de Duplicidades e Picos
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="px-2 py-0.5 rounded text-[9px] uppercase font-mono tracking-widest bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-bold">
+                        Painel Consolidado
+                      </span>
+                      <span className="text-[10px] text-gray-400 font-mono">
+                        Volumetria: {filteredDuplicates.length} grupos ({isFiltered ? filteredRowCount : transactionCount} registros)
+                      </span>
+                    </div>
+                    <h3 className="text-base font-bold uppercase tracking-widest text-white flex items-center gap-2">
+                      <BarChart3 size={18} className="text-emerald-400" /> Dashboard Executivo de Duplicidades, Picos e Padrões Comparativos
                     </h3>
-                    <p className="text-xs text-gray-400 mt-0.5">
-                      {isFiltered 
-                        ? `Análise de picos e indicadores considerando exclusivamente os ${filteredDuplicates.length} grupos filtrados.`
-                        : 'Análise detalhada de horários, dias de pico, prestadores e indicadores críticos de recorrência.'}
+                    <p className="text-xs text-gray-400 mt-1 max-w-3xl leading-relaxed">
+                      Análise integrada de incidência temporal, comparativos entre dias da semana, evolução mensal, turnos do dia, prestadores, procedimentos e beneficiários recorrentes.
                     </p>
                   </div>
                   <div className="flex items-center gap-3">
                     <button 
                       onClick={handleExportFormattedDashboard}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] uppercase font-bold tracking-widest rounded transition-all flex items-center gap-2 shadow-lg shadow-emerald-900/30 cursor-pointer"
-                      title="Gera dashboard executivo formatado com cores, cartões e tabelas de impacto"
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] uppercase font-bold tracking-widest rounded transition-all flex items-center gap-2 shadow-lg shadow-emerald-900/30 cursor-pointer"
+                      title="Gera dashboard executivo completo em Excel (.XLSX) formatado com cores, gráficos e planilhas comparativas"
                     >
-                      <FileDown size={14} /> Exportar Dashboard Formatado (.XLSX)
+                      <FileDown size={14} /> Exportar Dashboard & Padrões (.XLSX)
                     </button>
                     <button 
                       onClick={exportDashboardReport}
-                      className="px-3 py-2 bg-white/5 border border-white/10 hover:bg-white/10 text-gray-300 hover:text-white text-[10px] uppercase tracking-widest rounded transition-all flex items-center gap-2 cursor-pointer"
-                      title="Exportação simples do resumo"
+                      className="px-3 py-2.5 bg-white/5 border border-white/10 hover:bg-white/10 text-gray-300 hover:text-white text-[10px] uppercase tracking-widest rounded transition-all flex items-center gap-2 cursor-pointer"
+                      title="Exportação simples do resumo analítico"
                     >
                       <FileDown size={12} /> Dados Simples
                     </button>
                   </div>
                 </div>
 
-                {/* Peak Analysis Grid */}
+                {/* 4 Indicadores Executivos Rápidos (KPIs) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-white/[0.02] border border-white/10 p-5 rounded-lg flex flex-col justify-between hover:border-emerald-500/40 transition-all">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-gray-400 font-mono block mb-1">Total de Grupos Duplicados</span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-bold font-mono text-white">{itStats.totalGroups}</span>
+                        <span className="text-xs text-emerald-400 font-mono font-semibold">({isFiltered ? filteredRowCount : transactionCount} reg.)</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-3 pt-3 border-t border-white/5">
+                      Volume total de grupos em duplicidade analisados.
+                    </p>
+                  </div>
+
+                  <div className="bg-white/[0.02] border border-white/10 p-5 rounded-lg flex flex-col justify-between hover:border-red-500/40 transition-all">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-gray-400 font-mono block mb-1">Simultâneas (0 min / Provável)</span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-bold font-mono text-red-400">{itStats.deltaZeroCount}</span>
+                        <span className="text-xs text-red-400 font-mono font-semibold">({itStats.instantPercent}%)</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-3 pt-3 border-t border-white/5">
+                      Ocorrências gravadas no mesmo minuto exato.
+                    </p>
+                  </div>
+
+                  <div className="bg-white/[0.02] border border-white/10 p-5 rounded-lg flex flex-col justify-between hover:border-amber-500/40 transition-all">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-gray-400 font-mono block mb-1">Micro-intervalo (1 a 5 min)</span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-bold font-mono text-amber-400">{itStats.delta1to5Count}</span>
+                        <span className="text-xs text-amber-400 font-mono font-semibold">({itStats.microPercent}%)</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-3 pt-3 border-t border-white/5">
+                      Duplicidades ocorridas em até 5 minutos.
+                    </p>
+                  </div>
+
+                  <div className="bg-white/[0.02] border border-white/10 p-5 rounded-lg flex flex-col justify-between hover:border-purple-500/40 transition-all">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-widest text-gray-400 font-mono block mb-1">Concentração Prestador Líder</span>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-2xl font-bold font-mono text-purple-400">{itStats.topProviderConcentrationPercent}%</span>
+                        <span className="text-xs text-gray-400 font-mono truncate max-w-[120px]" title={itStats.topProviderName}>{itStats.topProviderName}</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-3 pt-3 border-t border-white/5">
+                      Top 3 prestadores somam {itStats.top3ProvidersSharePercent}% das ocorrências.
+                    </p>
+                  </div>
+                </div>
+
+                {/* BLOCO 1: COMPARATIVOS TEMPORAIS (DIAS DA SEMANA E DIAS DO MÊS) */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Peak Days */}
+                  {/* Painel 1.1: Comparativo por Dia da Semana */}
                   <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-gray-300 flex items-center gap-2">
-                      <Calendar size={14} className="text-emerald-400" /> Dias com Maior Incidência de Duplicidades
-                    </h4>
-                    <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-sky-300 flex items-center gap-2">
+                        <Calendar size={15} /> Comparativo por Dia da Semana (Seg a Dom)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Distribuição Semanal</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {itStats.dayOfWeekDistribution.map((item, idx) => (
+                        <div key={idx} className="bg-white/5 p-3 rounded border border-white/5 flex flex-col gap-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white font-medium">{item.dayName}</span>
+                            <span className="font-mono font-bold text-sky-300">
+                              {item.count} grupo(s) ({item.percent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-sky-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, item.percent))}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Painel 1.2: Dias do Mês com Maior Incidência (Datas de Pico) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-2">
+                        <Calendar size={15} /> Datas de Pico no Mês (Maiores Incidências)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Picos por Data</span>
+                    </div>
+
+                    <div className="space-y-3 max-h-[340px] overflow-y-auto custom-scrollbar pr-2">
                       {dashboardStats.topDays.length === 0 ? (
                         <p className="text-xs text-gray-500 italic">Nenhum dado de data disponível.</p>
                       ) : (
@@ -1376,12 +1974,12 @@ export default function App() {
                           const maxCount = dashboardStats.topDays[0]?.count || 1;
                           const pct = Math.round((item.count / maxCount) * 100);
                           return (
-                            <div key={item.day} className="flex flex-col gap-1 bg-white/5 p-3 rounded border border-white/5">
+                            <div key={item.day} className="flex flex-col gap-1.5 bg-white/5 p-3 rounded border border-white/5">
                               <div className="flex justify-between items-center text-xs">
                                 <span className="font-mono text-white font-medium">{item.day || 'Data Indefinida'}</span>
                                 <span className="font-mono font-bold text-emerald-400">{item.count} grupo(s)</span>
                               </div>
-                              <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
                                 <div className="bg-emerald-500 h-full rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
                               </div>
                             </div>
@@ -1390,27 +1988,123 @@ export default function App() {
                       )}
                     </div>
                   </div>
+                </div>
 
-                  {/* Peak Hours */}
+                {/* BLOCO 1.5: ANÁLISE COMPARATIVA DOS DIAS DO MÊS (01 A 31) E CICLO MENSAL */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Painel: Comparativo por Dias do Mês (Dias 01 a 31) */}
+                  <div className="lg:col-span-2 bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-emerald-300 flex items-center gap-2">
+                        <Calendar size={15} /> Comparativo por Dias do Mês (Dias 01 a 31)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Padrão Diário</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5 max-h-[320px] overflow-y-auto custom-scrollbar pr-2">
+                      {itStats.dayOfMonthDistribution.map((dom) => (
+                        <div key={dom.dayNum} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col justify-between gap-1 hover:border-emerald-500/30 transition-all">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[11px] font-mono font-bold text-white">{dom.dayLabel}</span>
+                            <span className="text-[10px] font-mono font-bold text-emerald-400">{dom.count}</span>
+                          </div>
+                          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden mt-1">
+                            <div 
+                              className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, dom.percent))}%` }}
+                            />
+                          </div>
+                          <span className="text-[9px] font-mono text-gray-400 text-right mt-0.5">{dom.percent}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Painel: Etapas do Ciclo Mensal de Faturamento */}
                   <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-gray-300 flex items-center gap-2">
-                      <Clock size={14} className="text-amber-400" /> Horários de Pico (Faixas Horárias)
-                    </h4>
-                    <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-amber-300 flex items-center gap-2">
+                        <TrendingUp size={15} /> Etapas do Ciclo Mensal
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Início, Meio e Fim</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {itStats.monthCycleDistribution.map((cy, idx) => (
+                        <div key={idx} className="bg-white/5 p-3 rounded border border-white/5 flex flex-col gap-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white font-medium">{cy.cycleName}</span>
+                            <span className="font-mono font-bold text-amber-300">
+                              {cy.count} grupo(s) ({cy.percent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-amber-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, cy.percent))}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* BLOCO 2: ANÁLISE POR HORÁRIO E TURNOS DO DIA */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Painel 2.1: Distribuição por Turnos do Dia (Soma 100%) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-amber-300 flex items-center gap-2">
+                        <Clock size={15} /> Distribuição por Turnos do Dia
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Total: 100%</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {itStats.shiftDistribution.map((item, idx) => (
+                        <div key={idx} className="bg-white/5 p-3 rounded border border-white/5 flex flex-col gap-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white font-medium">{item.shiftName}</span>
+                            <span className="font-mono font-bold text-amber-300">
+                              {item.count} ocorrência(s) ({item.percent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-amber-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, item.percent))}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Painel 2.2: Horários de Pico (Faixas Horárias Específicas) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-amber-400 flex items-center gap-2">
+                        <Clock size={15} /> Faixas Horárias de Pico (HH:00)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Horários Mais Críticos</span>
+                    </div>
+
+                    <div className="space-y-3 max-h-[340px] overflow-y-auto custom-scrollbar pr-2">
                       {dashboardStats.topHours.length === 0 ? (
                         <p className="text-xs text-gray-500 italic">Nenhum horário registrado.</p>
                       ) : (
                         dashboardStats.topHours.map((item) => {
-                          const maxCount = dashboardStats.topHours[0]?.count || 1;
-                          const pct = Math.round((item.count / maxCount) * 100);
+                          const totalH = dashboardStats.topHours.reduce((acc, h) => acc + h.count, 0) || 1;
+                          const pct = Math.round((item.count / totalH) * 100);
                           return (
-                            <div key={item.hour} className="flex flex-col gap-1 bg-white/5 p-3 rounded border border-white/5">
+                            <div key={item.hour} className="flex flex-col gap-1.5 bg-white/5 p-3 rounded border border-white/5">
                               <div className="flex justify-between items-center text-xs">
                                 <span className="font-mono text-white font-medium">{item.hour}</span>
-                                <span className="font-mono font-bold text-amber-400">{item.count} ocorrência(s)</span>
+                                <span className="font-mono font-bold text-amber-400">{item.count} ocorrência(s) ({pct}%)</span>
                               </div>
-                              <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
-                                <div className="bg-amber-500 h-full rounded-full transition-all duration-500" style={{ width: `${pct}%` }} />
+                              <div className="w-full bg-white/10 h-2 rounded-full overflow-hidden">
+                                <div className="bg-amber-500 h-full rounded-full transition-all duration-500" style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} />
                               </div>
                             </div>
                           );
@@ -1420,33 +2114,293 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Top Providers & Procedures */}
+                {/* BLOCO 3: EVOLUÇÃO MENSAL E FAIXAS DE INTERVALO TEMPORAL */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {/* Painel 3.1: Evolução Temporal entre Meses */}
                   <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-gray-300 flex items-center gap-2">
-                      <Building2 size={14} className="text-blue-400" /> Prestadores com Mais Duplicidades
-                    </h4>
-                    <div className="space-y-2">
-                      {dashboardStats.topProviders.map((p, idx) => (
-                        <div key={idx} className="flex justify-between items-center text-xs bg-white/5 p-3 rounded border border-white/5">
-                          <span className="text-white truncate max-w-[280px]" title={p.provider}>{p.provider}</span>
-                          <span className="font-mono font-bold text-blue-400">{p.count}</span>
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-blue-300 flex items-center gap-2">
+                        <TrendingUp size={15} /> Evolução Temporal entre Meses
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Comparativo Mensal</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {itStats.monthlyDistribution.length === 0 ? (
+                        <p className="text-xs text-gray-500 italic">Nenhuma data mensal identificada.</p>
+                      ) : (
+                        itStats.monthlyDistribution.map((m, idx) => (
+                          <div key={idx} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col gap-1.5">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-white font-medium font-mono">{m.monthLabel}</span>
+                              <span className="font-mono font-bold text-blue-300 shrink-0 ml-2">
+                                {m.count} caso(s) ({m.percent}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-blue-500 h-full rounded-full transition-all duration-500" 
+                                style={{ width: `${Math.min(100, Math.max(2, m.percent))}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Painel 3.2: Frequência por Intervalo Temporal (Δt) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-sky-300 flex items-center gap-2">
+                        <Clock size={15} /> Frequência por Intervalo Temporal (Δt)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Janela de Tempo</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="bg-white/5 p-3 rounded border border-white/5">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-mono text-red-300 font-bold">Δt = 0 min (Mesmo Minuto / Simultâneo)</span>
+                          <span className="font-mono font-bold text-white">{itStats.deltaZeroCount} casos ({itStats.instantPercent}%)</span>
+                        </div>
+                        <div className="w-full bg-white/10 h-2 rounded-full mt-2 overflow-hidden">
+                          <div className="bg-red-500 h-full rounded-full transition-all duration-500" style={{ width: `${itStats.instantPercent}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white/5 p-3 rounded border border-white/5">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-mono text-amber-300 font-bold">Δt = 1 a 5 min (Micro-intervalo)</span>
+                          <span className="font-mono font-bold text-white">{itStats.delta1to5Count} casos ({itStats.microPercent}%)</span>
+                        </div>
+                        <div className="w-full bg-white/10 h-2 rounded-full mt-2 overflow-hidden">
+                          <div className="bg-amber-500 h-full rounded-full transition-all duration-500" style={{ width: `${itStats.microPercent}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white/5 p-3 rounded border border-white/5">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-mono text-blue-300 font-bold">Δt = 6 a 30 min (Mesmo Turno)</span>
+                          <span className="font-mono font-bold text-white">{itStats.delta6to30Count} casos ({itStats.shortPercent}%)</span>
+                        </div>
+                        <div className="w-full bg-white/10 h-2 rounded-full mt-2 overflow-hidden">
+                          <div className="bg-blue-500 h-full rounded-full transition-all duration-500" style={{ width: `${itStats.shortPercent}%` }} />
+                        </div>
+                      </div>
+
+                      <div className="bg-white/5 p-3 rounded border border-white/5">
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="font-mono text-gray-300 font-bold">Δt &gt; 30 min (Reemissão Tardia)</span>
+                          <span className="font-mono font-bold text-white">{itStats.deltaOver30Count} casos ({itStats.extendedPercent}%)</span>
+                        </div>
+                        <div className="w-full bg-white/10 h-2 rounded-full mt-2 overflow-hidden">
+                          <div className="bg-gray-400 h-full rounded-full transition-all duration-500" style={{ width: `${itStats.extendedPercent}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* BLOCO 4: RANKINGS E CRUZAMENTO DE PRESTADORES, PROCEDIMENTOS, BENEFICIÁRIOS E SITUAÇÃO */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Painel 4.1: Prestadores com Mais Duplicidades (Top 10) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-purple-300 flex items-center gap-2">
+                        <Building2 size={15} /> Prestadores com Mais Duplicidades (Top 10)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Share %</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {itStats.topProvidersList.map((p, idx) => (
+                        <div key={idx} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col gap-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white font-medium truncate max-w-[280px]" title={p.provider}>
+                              {idx + 1}. {p.provider}
+                            </span>
+                            <span className="font-mono font-bold text-purple-300 shrink-0 ml-2">
+                              {p.count} casos ({p.percent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-purple-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, p.percent))}%` }}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
                   </div>
 
+                  {/* Painel 4.2: Procedimentos Mais Frequentes em Duplicidade (Top 10) */}
                   <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
-                    <h4 className="text-xs font-bold uppercase tracking-widest text-gray-300 flex items-center gap-2">
-                      <FileText size={14} className="text-purple-400" /> Procedimentos Mais Frequentes em Duplicidade
-                    </h4>
-                    <div className="space-y-2">
-                      {dashboardStats.topProcedures.map((pr, idx) => (
-                        <div key={idx} className="flex justify-between items-center text-xs bg-white/5 p-3 rounded border border-white/5">
-                          <span className="text-white truncate max-w-[280px]" title={pr.procedure}>{pr.procedure}</span>
-                          <span className="font-mono font-bold text-purple-400">{pr.count}</span>
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-indigo-300 flex items-center gap-2">
+                        <FileText size={15} /> Procedimentos Mais Frequentes em Duplicidade (Top 10)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Volume</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {itStats.topProceduresList.map((pr, idx) => (
+                        <div key={idx} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col gap-1.5">
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-white font-medium truncate max-w-[280px]" title={pr.procedure}>
+                              {idx + 1}. {pr.procedure}
+                            </span>
+                            <span className="font-mono font-bold text-indigo-300 shrink-0 ml-2">
+                              {pr.count} casos ({pr.percent}%)
+                            </span>
+                          </div>
+                          <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                            <div 
+                              className="bg-indigo-500 h-full rounded-full transition-all duration-500" 
+                              style={{ width: `${Math.min(100, Math.max(2, pr.percent))}%` }}
+                            />
+                          </div>
                         </div>
                       ))}
+                    </div>
+                  </div>
+
+                  {/* Painel 4.3: Beneficiários / Pacientes com Maior Recorrência (Top 10) */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-emerald-300 flex items-center gap-2">
+                        <User size={15} /> Beneficiários / Pacientes com Maior Recorrência (Top 10)
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Recorrência</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {itStats.topBeneficiariesList.length === 0 ? (
+                        <p className="text-xs text-gray-500 italic">Nenhum beneficiário identificado.</p>
+                      ) : (
+                        itStats.topBeneficiariesList.map((b, idx) => (
+                          <div key={idx} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col gap-1.5">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-white font-medium truncate max-w-[280px]" title={b.beneficiary}>
+                                {idx + 1}. {b.beneficiary}
+                              </span>
+                              <span className="font-mono font-bold text-emerald-400 shrink-0 ml-2">
+                                {b.count} caso(s) ({b.percent}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                                style={{ width: `${Math.min(100, Math.max(2, b.percent))}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Painel 4.4: Distribuição por Situação / Status da Transação */}
+                  <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                    <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-purple-300 flex items-center gap-2">
+                        <CheckCircle2 size={15} /> Distribuição por Situação / Status da Transação
+                      </h4>
+                      <span className="text-[10px] font-mono text-gray-400">Status</span>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {itStats.situationsDistribution.length === 0 ? (
+                        <p className="text-xs text-gray-500 italic">Nenhuma situação informada.</p>
+                      ) : (
+                        itStats.situationsDistribution.map((st, idx) => (
+                          <div key={idx} className="bg-white/5 p-2.5 rounded border border-white/5 flex flex-col gap-1.5">
+                            <div className="flex justify-between items-center text-xs">
+                              <span className="text-white font-medium truncate max-w-[280px]" title={st.situation}>
+                                {st.situation}
+                              </span>
+                              <span className="font-mono font-bold text-purple-300 shrink-0 ml-2">
+                                {st.count} caso(s) ({st.percent}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-purple-500 h-full rounded-full transition-all duration-500" 
+                                style={{ width: `${Math.min(100, Math.max(2, st.percent))}%` }}
+                              />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* BLOCO 5: COMPORTAMENTO DE IDENTIFICADORES (PROTOCOLOS E REMESSAS) */}
+                <div className="bg-white/[0.02] border border-white/10 p-6 rounded-lg flex flex-col gap-4">
+                  <div className="flex justify-between items-center border-b border-white/5 pb-3">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-emerald-300 flex items-center gap-2">
+                      <Database size={15} /> Comportamento de Identificadores (Protocolos e Remessas)
+                    </h4>
+                    <span className="text-[10px] font-mono text-gray-400">Proporção Estatística</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Mesmo Protocolo */}
+                    <div className="bg-white/5 p-3.5 rounded border border-white/5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-mono text-emerald-300 font-bold">Mesmo Número de Protocolo</span>
+                        <span className="font-mono font-bold text-white">{itStats.sameProtocolCount} casos ({itStats.sameProtocolPercent}%)</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-2 rounded-full mt-2.5 overflow-hidden">
+                        <div 
+                          className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${itStats.sameProtocolPercent}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Protocolos Distintos */}
+                    <div className="bg-white/5 p-3.5 rounded border border-white/5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-mono text-amber-300 font-bold">Protocolos Distintos Gerados</span>
+                        <span className="font-mono font-bold text-white">{itStats.differentProtocolCount} casos ({itStats.differentProtocolPercent}%)</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-2 rounded-full mt-2.5 overflow-hidden">
+                        <div 
+                          className="bg-amber-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${itStats.differentProtocolPercent}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Mesma Remessa */}
+                    <div className="bg-white/5 p-3.5 rounded border border-white/5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-mono text-purple-300 font-bold">Mesma Remessa de Faturamento</span>
+                        <span className="font-mono font-bold text-white">{itStats.sameRemessaCount} casos ({itStats.sameRemessaPercent}%)</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-2 rounded-full mt-2.5 overflow-hidden">
+                        <div 
+                          className="bg-purple-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${itStats.sameRemessaPercent}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Remessas Diferentes */}
+                    <div className="bg-white/5 p-3.5 rounded border border-white/5">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-mono text-sky-300 font-bold">Remessas Diferentes / Lotes Distintos</span>
+                        <span className="font-mono font-bold text-white">{itStats.differentRemessaCount} casos ({itStats.differentRemessaPercent}%)</span>
+                      </div>
+                      <div className="w-full bg-white/10 h-2 rounded-full mt-2.5 overflow-hidden">
+                        <div 
+                          className="bg-sky-500 h-full rounded-full transition-all duration-500" 
+                          style={{ width: `${itStats.differentRemessaPercent}%` }}
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
