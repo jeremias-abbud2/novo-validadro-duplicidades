@@ -103,100 +103,6 @@ export default function App() {
   });
   
   const [activeTab, setActiveTab] = useState<'table' | 'dashboard'>('table');
-
-  const categoryStats = useMemo(() => {
-    let high = 0;
-    let medium = 0;
-    let low = 0;
-    duplicateGroups.forEach(g => {
-      const info = getGroupTimeInterval(g.rows);
-      if (info.level === 'high') high++;
-      else if (info.level === 'medium') medium++;
-      else low++;
-    });
-    return { high, medium, low, total: duplicateGroups.length };
-  }, [duplicateGroups]);
-
-  const dashboardStats = useMemo(() => {
-    const daysMap: Record<string, number> = {};
-    const hoursMap: Record<string, number> = {};
-    const providersMap: Record<string, number> = {};
-    const proceduresMap: Record<string, number> = {};
-
-    duplicateGroups.forEach(group => {
-      const d = group.params.data || 'Data não informada';
-      daysMap[d] = (daysMap[d] || 0) + 1;
-
-      const prov = group.params.prestador || 'Não informado';
-      providersMap[prov] = (providersMap[prov] || 0) + 1;
-
-      const proc = group.params.procedimento || 'Não informado';
-      proceduresMap[proc] = (proceduresMap[proc] || 0) + 1;
-
-      group.rows.forEach(row => {
-        const dateVal = getColValue(row, 'DATA');
-        const hourVal = getColValue(row, 'HORA');
-        let { time } = normalizeDate(dateVal);
-        if ((!time || time === '00:00') && hourVal !== undefined && hourVal !== null && hourVal !== '') {
-          const hNorm = normalizeDate(hourVal);
-          if (hNorm.time) time = hNorm.time;
-          else if (typeof hourVal === 'string' && hourVal.includes(':')) time = hourVal.trim().substring(0, 5);
-        }
-        if (time && time !== '00:00' && time.includes(':')) {
-          const hourGroup = time.split(':')[0] + ':00';
-          hoursMap[hourGroup] = (hoursMap[hourGroup] || 0) + 1;
-        }
-      });
-    });
-
-    const topDays = Object.entries(daysMap)
-      .map(([day, count]) => ({ day, count }))
-      .sort((a, b) => b.count - a.count);
-
-    const topHours = Object.entries(hoursMap)
-      .map(([hour, count]) => ({ hour, count }))
-      .sort((a, b) => b.count - a.count);
-
-    const topProviders = Object.entries(providersMap)
-      .map(([provider, count]) => ({ provider, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    const topProcedures = Object.entries(proceduresMap)
-      .map(([procedure, count]) => ({ procedure, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 5);
-
-    return { topDays, topHours, topProviders, topProcedures };
-  }, [duplicateGroups]);
-
-  const exportDashboardReport = () => {
-    if (duplicateGroups.length === 0) return;
-
-    const wb = XLSX.utils.book_new();
-
-    const summaryData = [
-      { Métrica: 'Total de Registros Analisados', Valor: transactionCount },
-      { Métrica: 'Total de Grupos de Duplicidade', Valor: duplicateGroups.length },
-      { Métrica: 'Duplicidades Bem Prováveis (≤ 30min)', Valor: categoryStats.high },
-      { Métrica: 'Duplicidades Pouco Menos Prováveis (30m - 1h)', Valor: categoryStats.medium },
-      { Métrica: 'Outras Duplicidades (> 1h)', Valor: categoryStats.low },
-    ];
-    const wsSummary = XLSX.utils.json_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Resumo Executivo");
-
-    const wsDays = XLSX.utils.json_to_sheet(dashboardStats.topDays.map(d => ({ 'Data': d.day, 'Quantidade de Duplicidades': d.count })));
-    XLSX.utils.book_append_sheet(wb, wsDays, "Picos por Dia");
-
-    const wsHours = XLSX.utils.json_to_sheet(dashboardStats.topHours.map(h => ({ 'Faixa Horária': h.hour, 'Ocorrências': h.count })));
-    XLSX.utils.book_append_sheet(wb, wsHours, "Picos por Horário");
-
-    const wsProv = XLSX.utils.json_to_sheet(dashboardStats.topProviders.map(p => ({ 'Prestador': p.provider, 'Duplicidades': p.count })));
-    XLSX.utils.book_append_sheet(wb, wsProv, "Top Prestadores");
-
-    XLSX.writeFile(wb, "Dashboard_Auditoria_Duplicidades.xlsx");
-  };
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function normalizeDate(val: any): { date: string; time: string } {
@@ -223,13 +129,24 @@ export default function App() {
 
       const parts = str.split(/[\sT]/);
       
-      // Caso string contenha apenas horário (ex: "12:30" ou "12:30:00")
+      // Caso string contenha apenas horário (ex: "12:30" ou "00:00" ou "0:00")
       if (parts.length === 1 && parts[0].includes(':')) {
-        return { date: '', time: parts[0].substring(0, 5) };
+        const timeSubParts = parts[0].split(':');
+        const h = (timeSubParts[0] || '0').padStart(2, '0');
+        const m = (timeSubParts[1] || '0').padStart(2, '0');
+        return { date: '', time: `${h}:${m}` };
       }
 
       const datePart = parts[0] || '';
-      const timePart = (parts[1] || '').substring(0, 5); 
+      let timePart = '';
+      if (parts[1] && parts[1].includes(':')) {
+        const timeSubParts = parts[1].split(':');
+        const h = (timeSubParts[0] || '0').padStart(2, '0');
+        const m = (timeSubParts[1] || '0').padStart(2, '0');
+        timePart = `${h}:${m}`;
+      } else if (parts[1]) {
+        timePart = parts[1].substring(0, 5);
+      }
       
       return {
         date: datePart,
@@ -241,23 +158,58 @@ export default function App() {
     }
   };
 
+  function getRowTime(row: any): string {
+    const dateVal = getColValue(row, 'DATA');
+    const hourVal = getColValue(row, 'HORA');
+    
+    // 1. Tenta extrair da coluna HORA se existir e não for vazia
+    if (hourVal !== undefined && hourVal !== null && String(hourVal).trim() !== '') {
+      const hNorm = normalizeDate(hourVal);
+      if (hNorm.time) {
+        return hNorm.time;
+      }
+      if (typeof hourVal === 'string' && hourVal.includes(':')) {
+        const [h, m] = hourVal.trim().split(':');
+        return `${(h || '0').padStart(2, '0')}:${(m || '0').padStart(2, '0')}`;
+      }
+      if (typeof hourVal === 'number' || (!isNaN(Number(hourVal)) && String(hourVal).trim() !== '')) {
+        const num = Number(hourVal);
+        // Fração decimal do Excel para horários (ex: 0.5 = 12:00, 0 = 00:00)
+        if (num >= 0 && num < 1) {
+          const totalMin = Math.round(num * 24 * 60);
+          const h = Math.floor(totalMin / 60) % 24;
+          const m = totalMin % 60;
+          return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        }
+        // Horário militar inteiro (ex: 0 -> 00:00, 15 -> 00:15, 130 -> 01:30, 1430 -> 14:30)
+        if (num >= 0 && num <= 2400) {
+          const s = String(Math.floor(num)).padStart(4, '0');
+          const h = s.substring(0, 2);
+          const m = s.substring(2, 4);
+          if (Number(h) < 24 && Number(m) < 60) {
+            return `${h}:${m}`;
+          }
+        }
+      }
+    }
+
+    // 2. Tenta extrair horário da coluna DATA se presente
+    const dNorm = normalizeDate(dateVal);
+    if (dNorm.time) {
+      return dNorm.time;
+    }
+
+    return '';
+  }
+
   function getGroupTimeInterval(rows: TransactionRow[]) {
     const times: number[] = [];
     rows.forEach(row => {
-      const dateVal = getColValue(row, 'DATA');
-      const hourVal = getColValue(row, 'HORA');
-      let { time } = normalizeDate(dateVal);
-      if ((!time || time === '00:00') && hourVal !== undefined && hourVal !== null && hourVal !== '') {
-        const hNorm = normalizeDate(hourVal);
-        if (hNorm.time) {
-          time = hNorm.time;
-        } else if (typeof hourVal === 'string' && hourVal.includes(':')) {
-          time = hourVal.trim().substring(0, 5);
-        }
-      }
-      if (time && time !== '00:00' && time !== '--:--' && time.includes(':')) {
+      const time = getRowTime(row);
+      // Permite horários em 00:00 e arredores (ex: meia-noite em internações)
+      if (time && time !== '--:--' && time.includes(':')) {
         const [hh, mm] = time.split(':').map(Number);
-        if (!isNaN(hh) && !isNaN(mm)) {
+        if (!isNaN(hh) && !isNaN(mm) && hh >= 0 && hh < 24 && mm >= 0 && mm < 60) {
           times.push(hh * 60 + mm);
         }
       }
@@ -265,11 +217,16 @@ export default function App() {
 
     if (times.length < 2) return { minDiff: null, label: '', level: 'normal' };
 
-    times.sort((a, b) => a - b);
+    // Calcula a menor diferença circular entre qualquer par de horários (relojoeiro de 24h = 1440 min)
     let minDiff = Infinity;
-    for (let i = 1; i < times.length; i++) {
-      const diff = times[i] - times[i - 1];
-      if (diff < minDiff) minDiff = diff;
+    for (let i = 0; i < times.length; i++) {
+      for (let j = i + 1; j < times.length; j++) {
+        const rawDiff = Math.abs(times[i] - times[j]);
+        const circularDiff = Math.min(rawDiff, 1440 - rawDiff);
+        if (circularDiff < minDiff) {
+          minDiff = circularDiff;
+        }
+      }
     }
 
     if (minDiff <= 30) {
@@ -627,6 +584,100 @@ export default function App() {
     });
   }, [duplicateGroups, filters]);
 
+  const isFiltered = useMemo(() => {
+    return Object.values(filters).some(v => v !== '');
+  }, [filters]);
+
+  const filteredRowCount = useMemo(() => {
+    return filteredDuplicates.reduce((sum, g) => sum + g.rows.length, 0);
+  }, [filteredDuplicates]);
+
+  const categoryStats = useMemo(() => {
+    let high = 0;
+    let medium = 0;
+    let low = 0;
+    filteredDuplicates.forEach(g => {
+      const info = getGroupTimeInterval(g.rows);
+      if (info.level === 'high') high++;
+      else if (info.level === 'medium') medium++;
+      else low++;
+    });
+    return { high, medium, low, total: filteredDuplicates.length };
+  }, [filteredDuplicates]);
+
+  const dashboardStats = useMemo(() => {
+    const daysMap: Record<string, number> = {};
+    const hoursMap: Record<string, number> = {};
+    const providersMap: Record<string, number> = {};
+    const proceduresMap: Record<string, number> = {};
+
+    filteredDuplicates.forEach(group => {
+      const d = group.params.data || 'Data não informada';
+      daysMap[d] = (daysMap[d] || 0) + 1;
+
+      const prov = group.params.prestador || 'Não informado';
+      providersMap[prov] = (providersMap[prov] || 0) + 1;
+
+      const proc = group.params.procedimento || 'Não informado';
+      proceduresMap[proc] = (proceduresMap[proc] || 0) + 1;
+
+      group.rows.forEach(row => {
+        const time = getRowTime(row);
+        if (time && time !== '--:--' && time.includes(':')) {
+          const hourGroup = time.split(':')[0].padStart(2, '0') + ':00';
+          hoursMap[hourGroup] = (hoursMap[hourGroup] || 0) + 1;
+        }
+      });
+    });
+
+    const topDays = Object.entries(daysMap)
+      .map(([day, count]) => ({ day, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const topHours = Object.entries(hoursMap)
+      .map(([hour, count]) => ({ hour, count }))
+      .sort((a, b) => b.count - a.count);
+
+    const topProviders = Object.entries(providersMap)
+      .map(([provider, count]) => ({ provider, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    const topProcedures = Object.entries(proceduresMap)
+      .map(([procedure, count]) => ({ procedure, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return { topDays, topHours, topProviders, topProcedures };
+  }, [filteredDuplicates]);
+
+  const exportDashboardReport = () => {
+    if (filteredDuplicates.length === 0) return;
+
+    const wb = XLSX.utils.book_new();
+
+    const summaryData = [
+      { Métrica: isFiltered ? 'Total de Registros nos Filtros Atuais' : 'Total de Registros Analisados', Valor: isFiltered ? filteredRowCount : transactionCount },
+      { Métrica: isFiltered ? 'Grupos de Duplicidade Filtrados' : 'Total de Grupos de Duplicidade', Valor: filteredDuplicates.length },
+      { Métrica: 'Duplicidades Bem Prováveis (≤ 30min)', Valor: categoryStats.high },
+      { Métrica: 'Duplicidades Pouco Menos Prováveis (30m - 1h)', Valor: categoryStats.medium },
+      { Métrica: 'Outras Duplicidades (> 1h)', Valor: categoryStats.low },
+    ];
+    const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+    XLSX.utils.book_append_sheet(wb, wsSummary, "Resumo Executivo");
+
+    const wsDays = XLSX.utils.json_to_sheet(dashboardStats.topDays.map(d => ({ 'Data': d.day, 'Quantidade de Duplicidades': d.count })));
+    XLSX.utils.book_append_sheet(wb, wsDays, "Picos por Dia");
+
+    const wsHours = XLSX.utils.json_to_sheet(dashboardStats.topHours.map(h => ({ 'Faixa Horária': h.hour, 'Ocorrências': h.count })));
+    XLSX.utils.book_append_sheet(wb, wsHours, "Picos por Horário");
+
+    const wsProv = XLSX.utils.json_to_sheet(dashboardStats.topProviders.map(p => ({ 'Prestador': p.provider, 'Duplicidades': p.count })));
+    XLSX.utils.book_append_sheet(wb, wsProv, "Top Prestadores");
+
+    XLSX.writeFile(wb, isFiltered ? "Dashboard_Duplicidades_Filtradas.xlsx" : "Dashboard_Auditoria_Duplicidades.xlsx");
+  };
+
   const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
@@ -663,7 +714,8 @@ export default function App() {
     const exportData = filteredDuplicates.flatMap(group => {
       const intervalInfo = getGroupTimeInterval(group.rows);
       return group.rows.map(row => {
-        const { date, time } = normalizeDate(getColValue(row, 'DATA'));
+        const { date } = normalizeDate(getColValue(row, 'DATA'));
+        const time = getRowTime(row);
         const remessaVal = getColValue(row, 'REMESSA');
         const protocoloVal = getColValue(row, 'PROTOCOLO');
 
@@ -689,7 +741,7 @@ export default function App() {
         }
 
         exportRow['DATA_NORMALIZADA'] = date;
-        exportRow['HORARIO'] = time;
+        exportRow['HORARIO'] = time || '--:--';
         exportRow['ID_BENEFICIARIO'] = getColValue(row, 'BENE_MATRICULA') ?? '';
         exportRow['ID_PRESTADOR'] = getColValue(row, 'PREST_MATRICULA') ?? '';
         exportRow['CATEGORIA_INTERVALO'] = intervalInfo.label || 'Outros';
@@ -707,24 +759,40 @@ export default function App() {
 
   const handleExportFormatted = async () => {
     if (filteredDuplicates.length === 0) return;
+
+    // Resumo dos filtros para personalização no cabeçalho do arquivo Excel
+    const activeFiltersList: string[] = [];
+    if (filters.prestador) activeFiltersList.push(`Prestador: ${filters.prestador}`);
+    if (filters.beneficiario) activeFiltersList.push(`Beneficiário: ${filters.beneficiario}`);
+    if (filters.matricula) activeFiltersList.push(`Matrícula: ${filters.matricula}`);
+    if (filters.procedimento) activeFiltersList.push(`Procedimento: ${filters.procedimento}`);
+    if (filters.data) activeFiltersList.push(`Data: ${filters.data}`);
+    if (filters.situacao) activeFiltersList.push(`Situação: ${filters.situacao}`);
+    if (filters.conselhoExecutante) activeFiltersList.push(`CRM: ${filters.conselhoExecutante}`);
+    if (filters.intervalCategory) {
+      const catLabel = filters.intervalCategory === 'high' ? '≤ 30min (Bem Provável)' : filters.intervalCategory === 'medium' ? '30m - 1h' : '> 1h';
+      activeFiltersList.push(`Intervalo: ${catLabel}`);
+    }
+
     await exportFormattedExcelReport({
       fileName: fileName || 'Relatório de Auditoria',
-      transactionCount,
+      transactionCount: isFiltered ? filteredRowCount : transactionCount,
       duplicateGroups: filteredDuplicates,
       fileHasRemessa,
       fileHasProtocolo,
-      selectedPrestadorFilter: filters.prestador,
+      selectedPrestadorFilter: activeFiltersList.length > 0 ? activeFiltersList.join(' | ') : undefined,
       getColValue,
       normalizeDate,
-      getGroupTimeInterval
+      getGroupTimeInterval,
+      getRowTime
     });
   };
 
   const handleExportFormattedDashboard = async () => {
-    if (duplicateGroups.length === 0) return;
+    if (filteredDuplicates.length === 0) return;
     await exportFormattedDashboardReport({
-      transactionCount,
-      duplicateGroups,
+      transactionCount: isFiltered ? filteredRowCount : transactionCount,
+      duplicateGroups: filteredDuplicates,
       categoryStats,
       dashboardStats
     });
@@ -772,12 +840,34 @@ export default function App() {
           )}
           <div className="flex gap-4">
             <div className="px-4 py-2 bg-white/5 border border-white/10 rounded flex flex-col min-w-[140px]">
-              <span className="text-[10px] text-gray-500 uppercase">Registros Analisados</span>
-              <span className="text-xl font-mono text-white leading-none">{transactionCount}</span>
+              <span className="text-[10px] text-gray-500 uppercase">
+                {isFiltered ? 'Registros Filtrados' : 'Registros Analisados'}
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xl font-mono text-white leading-none">
+                  {isFiltered ? filteredRowCount : transactionCount}
+                </span>
+                {isFiltered && (
+                  <span className="text-[10px] font-mono text-gray-400" title={`Total geral do arquivo: ${transactionCount}`}>
+                    / {transactionCount}
+                  </span>
+                )}
+              </div>
             </div>
             <div className="px-4 py-2 bg-red-900/20 border border-red-500/30 rounded flex flex-col min-w-[140px]">
-              <span className="text-[10px] text-red-400 uppercase">Possíveis Duplicidades</span>
-              <span className="text-xl font-mono text-red-500 leading-none">{duplicateGroups.length}</span>
+              <span className="text-[10px] text-red-400 uppercase">
+                {isFiltered ? 'Duplicidades Filtradas' : 'Possíveis Duplicidades'}
+              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xl font-mono text-red-500 leading-none">
+                  {filteredDuplicates.length}
+                </span>
+                {isFiltered && (
+                  <span className="text-[10px] font-mono text-red-400/70" title={`Total geral de grupos de duplicidade: ${duplicateGroups.length}`}>
+                    / {duplicateGroups.length}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -941,7 +1031,11 @@ export default function App() {
                     <h3 className="text-sm font-bold uppercase tracking-widest text-white flex items-center gap-2">
                       <BarChart3 size={16} className="text-emerald-400" /> Dashboard Executivo de Duplicidades e Picos
                     </h3>
-                    <p className="text-xs text-gray-400 mt-0.5">Análise detalhada de horários, dias de pico, prestadores e indicadores críticos de recorrência.</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {isFiltered 
+                        ? `Análise de picos e indicadores considerando exclusivamente os ${filteredDuplicates.length} grupos filtrados.`
+                        : 'Análise detalhada de horários, dias de pico, prestadores e indicadores críticos de recorrência.'}
+                    </p>
                   </div>
                   <div className="flex items-center gap-3">
                     <button 
@@ -1281,20 +1375,7 @@ export default function App() {
                           return (
                             <>
                               {group.rows.map((row, rIdx) => {
-                                const dateVal = getColValue(row, 'DATA');
-                                const hourVal = getColValue(row, 'HORA');
-                                
-                                let { time } = normalizeDate(dateVal);
-                                
-                                // Se não encontrou hora na data, tenta na coluna HORA
-                                if ((!time || time === '00:00') && hourVal !== undefined && hourVal !== null && hourVal !== '') {
-                                  const hNorm = normalizeDate(hourVal);
-                                  if (hNorm.time) {
-                                    time = hNorm.time;
-                                  } else if (typeof hourVal === 'string' && hourVal.includes(':')) {
-                                    time = hourVal.trim().substring(0, 5);
-                                  }
-                                }
+                                const time = getRowTime(row);
 
                                 const badgeStyle = 
                                   intervalInfo.level === 'high' 
@@ -1315,7 +1396,7 @@ export default function App() {
                                         : 'Intervalo > 1h'
                                     }
                                   >
-                                    {(time && time !== '0') ? time : '--:--'}
+                                    {time || '--:--'}
                                   </span>
                                 );
                               })}

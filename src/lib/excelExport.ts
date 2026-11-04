@@ -10,6 +10,7 @@ export interface ExportReportOptions {
   getColValue: (row: any, concept: string) => any;
   normalizeDate: (val: any) => { date: string; time: string };
   getGroupTimeInterval: (rows: any[]) => { minDiff: number | null; label: string; level: string };
+  getRowTime?: (row: any) => string;
 }
 
 export async function exportFormattedExcelReport(options: ExportReportOptions) {
@@ -22,7 +23,8 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     selectedPrestadorFilter,
     getColValue,
     normalizeDate,
-    getGroupTimeInterval
+    getGroupTimeInterval,
+    getRowTime
   } = options;
 
   if (duplicateGroups.length === 0) return;
@@ -85,19 +87,19 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
 
   ws.mergeCells('E3:H3');
   const metaCell2 = ws.getCell('E3');
-  metaCell2.value = `📊 Total de Incidentes: ${duplicateGroups.length} grupo(s) de duplicidade`;
+  metaCell2.value = `📊 Total: ${duplicateGroups.length} grupo(s) (${transactionCount} reg.)`;
   metaCell2.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF0F766E' } };
   metaCell2.alignment = { vertical: 'middle', horizontal: 'left' };
 
   ws.mergeCells('I3:L3');
   const metaCell3 = ws.getCell('I3');
-  metaCell3.value = `🏥 Prestador Filtrado: ${selectedPrestadorFilter || 'Todos os Prestadores'}`;
+  metaCell3.value = selectedPrestadorFilter ? `🔍 Filtros: ${selectedPrestadorFilter}` : '🏥 Prestadores: Todos';
   metaCell3.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF1D4ED8' } };
   metaCell3.alignment = { vertical: 'middle', horizontal: 'left' };
 
   ws.mergeCells('M3:P3');
   const metaCell4 = ws.getCell('M3');
-  metaCell4.value = `📁 Arquivo Base: ${fileName || 'Relatório de Auditoria'}`;
+  metaCell4.value = `📁 Arquivo: ${fileName || 'Relatório de Auditoria'}`;
   metaCell4.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF64748B' } };
   metaCell4.alignment = { vertical: 'middle', horizontal: 'left' };
 
@@ -212,8 +214,8 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     group.rows.forEach((row: any, rIdx: number) => {
       const { date, time } = normalizeDate(getColValue(row, 'DATA'));
       const hourVal = getColValue(row, 'HORA');
-      let effectiveTime = time;
-      if ((!effectiveTime || effectiveTime === '00:00') && hourVal !== undefined && hourVal !== null && hourVal !== '') {
+      let effectiveTime = getRowTime ? getRowTime(row) : time;
+      if (!effectiveTime && hourVal !== undefined && hourVal !== null && hourVal !== '') {
         const hNorm = normalizeDate(hourVal);
         if (hNorm.time) effectiveTime = hNorm.time;
         else if (typeof hourVal === 'string' && hourVal.includes(':')) effectiveTime = hourVal.trim().substring(0, 5);
