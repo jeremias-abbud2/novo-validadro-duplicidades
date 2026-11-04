@@ -17,7 +17,11 @@ import {
   TrendingUp,
   Calendar,
   AlertTriangle,
-  PieChart
+  PieChart,
+  Files,
+  Plus,
+  Layers,
+  FileSpreadsheet
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -103,7 +107,14 @@ export default function App() {
   });
   
   const [activeTab, setActiveTab] = useState<'table' | 'dashboard'>('table');
+  const [uploadMode, setUploadMode] = useState<'single' | 'multi'>('single');
+  const [batchFiles, setBatchFiles] = useState<File[]>([]);
+  const [sourceFiles, setSourceFiles] = useState<string[]>([]);
+  const [processingStatus, setProcessingStatus] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const multiFileInputRef = useRef<HTMLInputElement>(null);
+  const addMoreFileInputRef = useRef<HTMLInputElement>(null);
 
   function normalizeDate(val: any): { date: string; time: string } {
     if (val === undefined || val === null || val === '') return { date: '', time: '' };
@@ -315,101 +326,210 @@ export default function App() {
     return candidates.length > 0 ? row[candidates[0].key] : undefined;
   };
 
+  const parseFileToRows = async (file: File): Promise<TransactionRow[]> => {
+    let jsonData: TransactionRow[] = [];
+    
+    // 1. Tentar leitura binária primeiro (funciona para XLSX, XLS e CSVs em UTF-8)
+    const arrayBuffer = await file.arrayBuffer();
+    const binaryData = new Uint8Array(arrayBuffer);
+    
+    try {
+      const workbook = XLSX.read(binaryData, { 
+        type: 'array', 
+        cellDates: true,
+        dateNF: 'dd/mm/yyyy hh:mm:ss',
+        cellText: false,
+        cellNF: false,
+        cellStyles: false
+      });
+      
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const initialData = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as TransactionRow[];
+      
+      // Se conseguimos ler e parece ter colunas suficientes, usamos isso
+      if (initialData.length > 0 && Object.keys(initialData[0]).length > 2) {
+        jsonData = initialData;
+      }
+    } catch (readErr) {
+      console.warn(`Binary read failed for ${file.name}, trying text-based fallbacks...`, readErr);
+    }
+
+    // 2. Se não funcionou ou parece ser um CSV com delimitador/encoding especial
+    if (jsonData.length === 0) {
+      const encodings = ['Windows-1252', 'ISO-8859-1', 'UTF-8'];
+      let maxCols = 0;
+      let bestData: TransactionRow[] = [];
+
+      for (const encoding of encodings) {
+        try {
+          const text = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = reject;
+            reader.readAsText(file, encoding);
+          });
+
+          // Pula arquivos que parecem ser binários (zips/xlsx) lidos como texto
+          if (text.startsWith('PK\x03\x04') || text.includes('\x00')) {
+            continue;
+          }
+
+          const firstLine = text.split('\n')[0];
+          const hasSemicolon = firstLine.includes(';');
+          
+          // Tenta ler com SheetJS tratando como string
+          const workbook = XLSX.read(text, { 
+            type: 'string', 
+            FS: hasSemicolon ? ';' : ',',
+            cellDates: true 
+          });
+          
+          const firstSheetName = workbook.SheetNames[0];
+          const currentData = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '' }) as TransactionRow[];
+          
+          if (currentData.length > 0) {
+            const cols = Object.keys(currentData[0]).length;
+            if (cols > maxCols) {
+              maxCols = cols;
+              bestData = currentData;
+              if (cols > 5) break; 
+            }
+          }
+        } catch (e) {
+          console.warn(`Failed reading text with ${encoding} for ${file.name}`, e);
+        }
+      }
+      jsonData = bestData;
+    }
+
+    if (jsonData.length === 0) {
+      throw new Error(`O arquivo "${file.name}" está vazio ou não pôde ser interpretado.`);
+    }
+
+    return jsonData;
+  };
+
   const processFile = async (file: File) => {
     setIsProcessing(true);
+    setProcessingStatus(`Lendo ${file.name}...`);
     setFileName(file.name);
+    setSourceFiles([file.name]);
     setError(null);
     setData(null);
     setDuplicateGroups([]);
 
     try {
-      let jsonData: TransactionRow[] = [];
-      
-      // 1. Tentar leitura binária primeiro (funciona para XLSX, XLS e CSVs em UTF-8)
-      const arrayBuffer = await file.arrayBuffer();
-      const binaryData = new Uint8Array(arrayBuffer);
-      
-      try {
-        const workbook = XLSX.read(binaryData, { 
-          type: 'array', 
-          cellDates: true,
-          dateNF: 'dd/mm/yyyy hh:mm:ss',
-          cellText: false,
-          cellNF: false,
-          cellStyles: false
-        });
-        
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        const initialData = XLSX.utils.sheet_to_json(worksheet, { defval: '' }) as TransactionRow[];
-        
-        // Se conseguimos ler e parece ter colunas suficientes, usamos isso
-        if (initialData.length > 0 && Object.keys(initialData[0]).length > 2) {
-          jsonData = initialData;
-        }
-      } catch (readErr) {
-        console.warn("Binary read failed or insufficient columns, trying text-based fallbacks...", readErr);
-      }
+      const rawData = await parseFileToRows(file);
+      const taggedData = rawData.map(row => ({
+        ...row,
+        ARQUIVO_ORIGEM: file.name
+      }));
 
-      // 2. Se não funcionou ou parece ser um CSV com delimitador/encoding especial
-      if (jsonData.length === 0) {
-        const encodings = ['Windows-1252', 'ISO-8859-1', 'UTF-8'];
-        let maxCols = 0;
-        let bestData: TransactionRow[] = [];
-
-        for (const encoding of encodings) {
-          try {
-            const text = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsText(file, encoding);
-            });
-
-            // Pula arquivos que parecem ser binários (zips/xlsx) lidos como texto
-            if (text.startsWith('PK\x03\x04') || text.includes('\x00')) {
-              continue;
-            }
-
-            const firstLine = text.split('\n')[0];
-            const hasSemicolon = firstLine.includes(';');
-            
-            // Tenta ler com SheetJS mas tratando como string
-            const workbook = XLSX.read(text, { 
-              type: 'string', 
-              FS: hasSemicolon ? ';' : ',',
-              cellDates: true 
-            });
-            
-            const firstSheetName = workbook.SheetNames[0];
-            const currentData = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheetName], { defval: '' }) as TransactionRow[];
-            
-            if (currentData.length > 0) {
-              const cols = Object.keys(currentData[0]).length;
-              if (cols > maxCols) {
-                maxCols = cols;
-                bestData = currentData;
-                if (cols > 5) break; 
-              }
-            }
-          } catch (e) {
-            console.warn(`Failed reading text with ${encoding}`, e);
-          }
-        }
-        jsonData = bestData;
-      }
-
-      if (jsonData.length === 0) {
-        throw new Error('O arquivo está vazio ou não pôde ser interpretado.');
-      }
-
-      setData(jsonData);
-      setTransactionCount(jsonData.length);
-      analyzeDuplicates(jsonData);
+      setData(taggedData);
+      setTransactionCount(taggedData.length);
+      analyzeDuplicates(taggedData);
     } catch (err: any) {
       setError(err.message || 'Erro ao processar o arquivo.');
     } finally {
       setIsProcessing(false);
+      setProcessingStatus(null);
+    }
+  };
+
+  const processMultipleFiles = async (filesToProcess: File[]) => {
+    if (!filesToProcess || filesToProcess.length === 0) {
+      setError('Por favor, adicione pelo menos um arquivo para iniciar a análise.');
+      return;
+    }
+
+    if (filesToProcess.length === 1) {
+      return processFile(filesToProcess[0]);
+    }
+
+    setIsProcessing(true);
+    setError(null);
+    setData(null);
+    setDuplicateGroups([]);
+    const names = filesToProcess.map(f => f.name);
+    setFileName(`Lote Consolidado (${filesToProcess.length} arquivos)`);
+    setSourceFiles(names);
+
+    try {
+      const allRows: TransactionRow[] = [];
+      const failedFiles: string[] = [];
+
+      for (let i = 0; i < filesToProcess.length; i++) {
+        const file = filesToProcess[i];
+        setProcessingStatus(`Lendo arquivo ${i + 1} de ${filesToProcess.length}: ${file.name}...`);
+        try {
+          const rows = await parseFileToRows(file);
+          rows.forEach(r => {
+            allRows.push({
+              ...r,
+              ARQUIVO_ORIGEM: file.name
+            });
+          });
+        } catch (err: any) {
+          console.error(`Falha no arquivo ${file.name}:`, err);
+          failedFiles.push(file.name);
+        }
+      }
+
+      if (allRows.length === 0) {
+        throw new Error('Nenhum dado válido pôde ser extraído dos arquivos selecionados.');
+      }
+
+      if (failedFiles.length > 0) {
+        setError(`Aviso: ${failedFiles.length} arquivo(s) não puderam ser lidos (${failedFiles.join(', ')}). Os demais foram processados com sucesso.`);
+      }
+
+      setProcessingStatus(`Cruzando ${allRows.length} registros entre todos os arquivos...`);
+      setData(allRows);
+      setTransactionCount(allRows.length);
+      analyzeDuplicates(allRows);
+    } catch (err: any) {
+      setError(err.message || 'Erro ao processar lote consolidado de arquivos.');
+    } finally {
+      setIsProcessing(false);
+      setProcessingStatus(null);
+    }
+  };
+
+  const addFilesToBatch = (newFiles: FileList | File[]) => {
+    const validFiles: File[] = [];
+    const existingKeys = new Set(batchFiles.map(f => `${f.name}-${f.size}`));
+
+    Array.from(newFiles).forEach(file => {
+      const lower = file.name.toLowerCase();
+      if (lower.endsWith('.xlsx') || lower.endsWith('.xls') || lower.endsWith('.csv')) {
+        const key = `${file.name}-${file.size}`;
+        if (!existingKeys.has(key)) {
+          validFiles.push(file);
+          existingKeys.add(key);
+        }
+      }
+    });
+
+    if (validFiles.length === 0) {
+      if (newFiles.length > 0) {
+        setError('Nenhum arquivo novo com extensão compatível (.xlsx, .xls, .csv) foi encontrado.');
+      }
+      return;
+    }
+
+    setBatchFiles(prev => [...prev, ...validFiles]);
+    setError(null);
+  };
+
+  const removeFileFromBatch = (index: number) => {
+    setBatchFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleMultiDrop = (e: DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      addFilesToBatch(e.dataTransfer.files);
     }
   };
 
@@ -746,6 +866,9 @@ export default function App() {
         exportRow['ID_PRESTADOR'] = getColValue(row, 'PREST_MATRICULA') ?? '';
         exportRow['CATEGORIA_INTERVALO'] = intervalInfo.label || 'Outros';
         exportRow['STATUS_AUDITORIA'] = 'Suspeita de Duplicidade';
+        if (sourceFiles.length > 1 || row['ARQUIVO_ORIGEM']) {
+          exportRow['ARQUIVO_ORIGEM'] = row['ARQUIVO_ORIGEM'] || fileName || '';
+        }
 
         return exportRow;
       });
@@ -784,7 +907,8 @@ export default function App() {
       getColValue,
       normalizeDate,
       getGroupTimeInterval,
-      getRowTime
+      getRowTime,
+      hasMultiOriginFiles: sourceFiles.length > 1
     });
   };
 
@@ -806,7 +930,8 @@ export default function App() {
       procedimento: '',
       data: '',
       situacao: '',
-      intervalCategory: ''
+      intervalCategory: '',
+      conselhoExecutante: ''
     });
   };
 
@@ -814,6 +939,9 @@ export default function App() {
     setData(null);
     setDuplicateGroups([]);
     setFileName(null);
+    setSourceFiles([]);
+    setBatchFiles([]);
+    setProcessingStatus(null);
     setTransactionCount(0);
     resetFilters();
   };
@@ -830,10 +958,16 @@ export default function App() {
           <p className="text-xs text-gray-500 mt-1 uppercase tracking-tighter italic">Sistema de Verificação de Integridade de Relatórios{fileName ? ` • ${fileName}` : ''}</p>
         </div>
         <div className="flex items-center gap-6">
+          {sourceFiles.length > 1 && (
+            <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 rounded text-emerald-300 text-xs font-mono" title={sourceFiles.join(', ')}>
+              <Files size={14} className="text-emerald-400" />
+              <span>Lote: {sourceFiles.length} arquivos</span>
+            </div>
+          )}
           {data && (
             <button 
               onClick={resetToHome}
-              className="flex items-center gap-2 px-4 py-2 text-[10px] uppercase tracking-widest text-[#E0E0E0]/60 hover:text-white border border-white/10 rounded hover:bg-white/5 transition-all"
+              className="flex items-center gap-2 px-4 py-2 text-[10px] uppercase tracking-widest text-[#E0E0E0]/60 hover:text-white border border-white/10 rounded hover:bg-white/5 transition-all cursor-pointer"
             >
               <Trash2 size={14} /> Novo Relatório
             </button>
@@ -879,30 +1013,195 @@ export default function App() {
           <motion.div 
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            className="flex-1 flex flex-col items-center justify-center border border-white/5 rounded-2xl bg-white/[0.01]"
+            className="flex-1 flex flex-col items-center justify-center border border-white/5 rounded-2xl bg-white/[0.01] p-6 md:p-12"
           >
-            <div 
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
-              className="group cursor-pointer flex flex-col items-center p-16 border-2 border-dashed border-white/10 hover:border-white/30 rounded-xl transition-all"
-            >
-              <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
-                <Upload size={32} className="text-white/60 group-hover:text-white" />
-              </div>
-              <h2 className="text-xl font-light text-white mb-2 uppercase tracking-wide">Importar Relatório</h2>
-              <p className="text-xs text-gray-500 font-mono mb-8">FORMATOS: .XLSX, .XLS, .CSV</p>
-              <input 
-                type="file" 
-                ref={fileInputRef}
-                className="hidden" 
-                accept=".xlsx, .xls, .csv"
-                onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0])}
-              />
-              <button className="px-8 py-3 bg-white/10 border border-white/10 text-xs uppercase tracking-widest text-white hover:bg-white/20 transition-all">
-                Explorar Arquivos
+            {/* Mode Switcher Tabs */}
+            <div className="flex items-center gap-2 p-1.5 bg-white/5 border border-white/10 rounded-xl mb-8">
+              <button
+                type="button"
+                onClick={() => setUploadMode('single')}
+                className={cn(
+                  "flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs uppercase tracking-wider transition-all cursor-pointer",
+                  uploadMode === 'single'
+                    ? "bg-white/15 text-white font-semibold shadow-md border border-white/20"
+                    : "text-gray-400 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <FileSpreadsheet size={16} /> Arquivo Único
+              </button>
+              <button
+                type="button"
+                onClick={() => setUploadMode('multi')}
+                className={cn(
+                  "flex items-center gap-2 px-5 py-2.5 rounded-lg text-xs uppercase tracking-wider transition-all cursor-pointer",
+                  uploadMode === 'multi'
+                    ? "bg-emerald-500/20 text-emerald-300 font-semibold shadow-md border border-emerald-500/30"
+                    : "text-gray-400 hover:text-white hover:bg-white/5"
+                )}
+              >
+                <Files size={16} /> Múltiplos Arquivos (Lote Consolidado)
+                <span className="text-[9px] bg-emerald-500/30 text-emerald-300 px-1.5 py-0.5 rounded font-mono font-bold">NOVO</span>
               </button>
             </div>
+
+            {/* Mode 1: Arquivo Único (Inalterado) */}
+            {uploadMode === 'single' ? (
+              <div 
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className="group cursor-pointer flex flex-col items-center p-14 border-2 border-dashed border-white/10 hover:border-white/30 rounded-xl transition-all max-w-xl w-full"
+              >
+                <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                  <Upload size={32} className="text-white/60 group-hover:text-white" />
+                </div>
+                <h2 className="text-xl font-light text-white mb-2 uppercase tracking-wide">Importar Relatório Único</h2>
+                <p className="text-xs text-gray-500 font-mono mb-8">FORMATOS: .XLSX, .XLS, .CSV</p>
+                <input 
+                  type="file" 
+                  ref={fileInputRef}
+                  className="hidden" 
+                  accept=".xlsx, .xls, .csv"
+                  onChange={(e) => e.target.files?.[0] && processFile(e.target.files[0])}
+                />
+                <button className="px-8 py-3 bg-white/10 border border-white/10 text-xs uppercase tracking-widest text-white hover:bg-white/20 transition-all cursor-pointer">
+                  Explorar Arquivo
+                </button>
+              </div>
+            ) : (
+              /* Mode 2: Múltiplos Arquivos (Lote Consolidado) */
+              <div className="w-full max-w-3xl flex flex-col gap-6">
+                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-5 text-left flex items-start gap-3">
+                  <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400 shrink-0 mt-0.5">
+                    <Layers size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-emerald-400 uppercase tracking-wider">Auditoria Consolidada de Lote de Arquivos</h3>
+                    <p className="text-xs text-gray-400 font-light mt-1 leading-relaxed">
+                      Envie múltiplos arquivos ao mesmo tempo para cruzar dados de diferentes meses, prestadores ou faturamentos. O sistema identificará duplicidades tanto dentro de cada arquivo quanto re-cobranças entre arquivos distintos.
+                    </p>
+                  </div>
+                </div>
+
+                <input 
+                  type="file" 
+                  ref={multiFileInputRef}
+                  className="hidden" 
+                  multiple
+                  accept=".xlsx, .xls, .csv"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      addFilesToBatch(e.target.files);
+                    }
+                  }}
+                />
+                <input 
+                  type="file" 
+                  ref={addMoreFileInputRef}
+                  className="hidden" 
+                  multiple
+                  accept=".xlsx, .xls, .csv"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      addFilesToBatch(e.target.files);
+                    }
+                  }}
+                />
+
+                {batchFiles.length === 0 ? (
+                  <div 
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={handleMultiDrop}
+                    onClick={() => multiFileInputRef.current?.click()}
+                    className="group cursor-pointer flex flex-col items-center p-14 border-2 border-dashed border-emerald-500/30 hover:border-emerald-500/60 rounded-xl bg-emerald-500/[0.02] hover:bg-emerald-500/[0.04] transition-all text-center"
+                  >
+                    <div className="w-20 h-20 bg-emerald-500/10 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                      <Files size={32} className="text-emerald-400 group-hover:text-emerald-300" />
+                    </div>
+                    <h2 className="text-xl font-light text-white mb-2 uppercase tracking-wide">Selecionar Múltiplos Arquivos</h2>
+                    <p className="text-xs text-gray-400 font-light max-w-md mb-2">
+                      Arraste e solte vários relatórios aqui (.xlsx, .xls, .csv) de uma só vez ou clique para explorar.
+                    </p>
+                    <p className="text-[10px] text-gray-500 font-mono mb-8">SUPORTE A SELEÇÃO MÚLTIPLA DE ARQUIVOS</p>
+                    <button className="px-8 py-3 bg-emerald-600/30 border border-emerald-500/50 text-xs uppercase tracking-widest text-emerald-300 hover:bg-emerald-600/40 transition-all cursor-pointer font-semibold shadow-lg shadow-emerald-950/50">
+                      Selecionar Arquivos do Lote
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-white/[0.02] border border-white/10 rounded-xl p-6 flex flex-col gap-5">
+                    <div className="flex items-center justify-between pb-4 border-b border-white/10">
+                      <div className="flex items-center gap-2">
+                        <Files size={18} className="text-emerald-400" />
+                        <span className="text-sm font-semibold text-white uppercase tracking-wider">
+                          Fila do Lote ({batchFiles.length} {batchFiles.length === 1 ? 'arquivo' : 'arquivos'})
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => addMoreFileInputRef.current?.click()}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded transition-all cursor-pointer"
+                        >
+                          <Plus size={14} /> Adicionar Mais
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBatchFiles([])}
+                          className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded transition-all cursor-pointer"
+                        >
+                          <Trash2 size={13} /> Limpar
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Files List */}
+                    <div className="max-h-64 overflow-y-auto divide-y divide-white/5 pr-1 custom-scrollbar">
+                      {batchFiles.map((f, i) => (
+                        <div key={`${f.name}-${i}`} className="py-2.5 px-3 flex items-center justify-between hover:bg-white/[0.02] rounded transition-colors">
+                          <div className="flex items-center gap-3 min-w-0 pr-4">
+                            <span className="text-[10px] font-mono text-gray-500 w-5 text-right">{i + 1}.</span>
+                            <FileSpreadsheet size={16} className="text-emerald-400 shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-gray-200 truncate" title={f.name}>{f.name}</p>
+                              <span className="text-[9px] font-mono text-gray-500">
+                                {f.size < 1024 * 1024 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / (1024 * 1024)).toFixed(2)} MB`}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeFileFromBatch(i)}
+                            className="text-gray-500 hover:text-red-400 p-1 transition-colors"
+                            title="Remover arquivo da fila"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Drop more area */}
+                    <div 
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={handleMultiDrop}
+                      className="border border-dashed border-white/10 hover:border-white/20 p-3 rounded-lg text-center text-xs text-gray-500 cursor-pointer"
+                      onClick={() => addMoreFileInputRef.current?.click()}
+                    >
+                      + Arraste mais arquivos aqui ou clique para complementar o lote
+                    </div>
+
+                    {/* Process Action CTA */}
+                    <button
+                      type="button"
+                      onClick={() => processMultipleFiles(batchFiles)}
+                      className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-widest rounded-lg transition-all shadow-xl shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Layers size={16} /> Analisar Duplicidades no Lote Consolidado ({batchFiles.length} {batchFiles.length === 1 ? 'arquivo' : 'arquivos'})
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="mt-16 w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-8 text-left border-t border-white/5 pt-12">
               <div className="space-y-4">
@@ -910,7 +1209,7 @@ export default function App() {
                   <div className="w-1 h-1 bg-emerald-500 rounded-full" /> Formato de Arquivo Sugerido
                 </h3>
                 <p className="text-sm text-gray-400 font-light leading-relaxed">
-                  Para máxima precisão, recomendamos um arquivo <span className="text-white font-medium">.XLSX</span> ou <span className="text-white font-medium">.CSV</span> com as seguintes colunas:
+                  Para máxima precisão, recomendamos arquivos <span className="text-white font-medium">.XLSX</span> ou <span className="text-white font-medium">.CSV</span> com as seguintes colunas:
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {[
@@ -929,6 +1228,10 @@ export default function App() {
                   <div className="w-1 h-1 bg-amber-500 rounded-full" /> Dicas de Processamento
                 </h3>
                 <ul className="space-y-3 text-sm text-gray-400 font-light">
+                  <li className="flex items-start gap-2">
+                    <span className="text-amber-500/50 mt-1">●</span>
+                    <span>No modo Lote Consolidado, o sistema identifica cobranças idênticas faturadas em meses ou arquivos distintos.</span>
+                  </li>
                   <li className="flex items-start gap-2">
                     <span className="text-amber-500/50 mt-1">●</span>
                     <span>Diferenciamos automaticamente Matrículas de Beneficiários e Prestadores.</span>
@@ -954,12 +1257,15 @@ export default function App() {
         )}
 
         {isProcessing && (
-          <div className="flex-1 flex flex-col items-center justify-center">
+          <div className="flex-1 flex flex-col items-center justify-center py-20">
             <div className="relative">
-              <div className="w-12 h-12 border-2 border-white/10 border-t-white rounded-full animate-spin"></div>
-              <Clock className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/20" size={16} />
+              <div className="w-14 h-14 border-2 border-white/10 border-t-emerald-400 rounded-full animate-spin"></div>
+              <Clock className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-white/30" size={18} />
             </div>
-            <p className="mt-4 text-[10px] uppercase font-mono tracking-[0.3em] text-gray-500 animate-pulse">Sincronizando Dados</p>
+            <p className="mt-5 text-xs uppercase font-mono tracking-[0.25em] text-emerald-400 animate-pulse text-center max-w-lg px-4">
+              {processingStatus || 'Sincronizando e Processando Dados'}
+            </p>
+            <p className="mt-1 text-[10px] text-gray-500 font-mono">Por favor, aguarde enquanto os registros são auditados...</p>
           </div>
         )}
 
@@ -1324,9 +1630,30 @@ export default function App() {
                       <div className="col-span-2 pr-4 border-r border-white/5">
                         <div className="flex flex-col gap-1 overflow-hidden">
                           <p className="text-xs text-white font-medium truncate uppercase" title={group.params.beneficiario}>{group.params.beneficiario}</p>
-                          <span className="text-[8px] text-emerald-500/60 font-mono self-start bg-emerald-500/5 px-1 rounded border border-emerald-500/10" title="Matrícula Beneficiário">
-                            {group.params.beneficiario_matricula || '---'}
-                          </span>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[8px] text-emerald-500/60 font-mono self-start bg-emerald-500/5 px-1 rounded border border-emerald-500/10" title="Matrícula Beneficiário">
+                              {group.params.beneficiario_matricula || '---'}
+                            </span>
+                            {sourceFiles.length > 1 && (
+                              (() => {
+                                const originSet = new Set(group.rows.map(r => r['ARQUIVO_ORIGEM']).filter(Boolean));
+                                const isCross = originSet.size > 1;
+                                return (
+                                  <span 
+                                    className={cn(
+                                      "text-[7.5px] font-mono self-start px-1 py-0.5 rounded border inline-flex items-center gap-1",
+                                      isCross 
+                                        ? "bg-purple-500/20 border-purple-500/40 text-purple-300 font-bold"
+                                        : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400"
+                                    )}
+                                    title={isCross ? `Duplicidade identificada entre ${originSet.size} arquivos distintos` : 'Duplicidade dentro do mesmo arquivo'}
+                                  >
+                                    <Layers size={8} /> {isCross ? `Cruzado (${originSet.size} arq.)` : 'Mesmo arquivo'}
+                                  </span>
+                                );
+                              })()
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="col-span-2 px-4 border-r border-white/5">
@@ -1369,7 +1696,7 @@ export default function App() {
                           {group.params.situacao}
                         </span>
                       </div>
-                      <div className="col-span-1 flex flex-col items-center gap-1">
+                      <div className="col-span-1 flex flex-col items-center gap-1.5">
                         {(() => {
                           const intervalInfo = getGroupTimeInterval(group.rows);
                           return (
@@ -1385,19 +1712,28 @@ export default function App() {
                                     : "bg-white/10 border-white/20 text-gray-300";
                                 
                                 return (
-                                  <span 
-                                    key={rIdx}
-                                    className={cn("px-1.5 py-0.5 border rounded font-mono text-[10px] w-full text-center", badgeStyle)}
-                                    title={
-                                      intervalInfo.level === 'high' 
-                                        ? 'Intervalo ≤ 30 min (Bem Provável)' 
-                                        : intervalInfo.level === 'medium' 
-                                        ? 'Intervalo entre 30 min e 1h (Um pouco menos provável)' 
-                                        : 'Intervalo > 1h'
-                                    }
-                                  >
-                                    {time || '--:--'}
-                                  </span>
+                                  <div key={rIdx} className="w-full flex flex-col items-center gap-0.5">
+                                    <span 
+                                      className={cn("px-1.5 py-0.5 border rounded font-mono text-[10px] w-full text-center", badgeStyle)}
+                                      title={
+                                        intervalInfo.level === 'high' 
+                                          ? 'Intervalo ≤ 30 min (Bem Provável)' 
+                                          : intervalInfo.level === 'medium' 
+                                          ? 'Intervalo entre 30 min e 1h (Um pouco menos provável)' 
+                                          : 'Intervalo > 1h'
+                                      }
+                                    >
+                                      {time || '--:--'}
+                                    </span>
+                                    {sourceFiles.length > 1 && row['ARQUIVO_ORIGEM'] && (
+                                      <span 
+                                        className="text-[7.5px] font-mono text-cyan-300/90 bg-cyan-950/60 border border-cyan-500/30 px-1 py-0.2 rounded truncate w-full text-center"
+                                        title={`Arquivo de Origem: ${row['ARQUIVO_ORIGEM']}`}
+                                      >
+                                        {row['ARQUIVO_ORIGEM'].length > 14 ? `${row['ARQUIVO_ORIGEM'].substring(0, 12)}…` : row['ARQUIVO_ORIGEM']}
+                                      </span>
+                                    )}
+                                  </div>
                                 );
                               })}
                               {intervalInfo.minDiff !== null && (

@@ -11,6 +11,7 @@ export interface ExportReportOptions {
   normalizeDate: (val: any) => { date: string; time: string };
   getGroupTimeInterval: (rows: any[]) => { minDiff: number | null; label: string; level: string };
   getRowTime?: (row: any) => string;
+  hasMultiOriginFiles?: boolean;
 }
 
 export async function exportFormattedExcelReport(options: ExportReportOptions) {
@@ -24,7 +25,8 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     getColValue,
     normalizeDate,
     getGroupTimeInterval,
-    getRowTime
+    getRowTime,
+    hasMultiOriginFiles
   } = options;
 
   if (duplicateGroups.length === 0) return;
@@ -149,6 +151,7 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     { header: 'CRM / CONSELHO', key: 'conselho', width: 16, align: 'center' },
     { header: 'PROBABILIDADE / INTERVALO', key: 'probabilidade', width: 26, align: 'center' },
     { header: 'STATUS AUDITORIA', key: 'status_auditoria', width: 22, align: 'center' },
+    ...(hasMultiOriginFiles ? [{ header: 'ARQUIVO DE ORIGEM', key: 'arquivo_origem', width: 28, align: 'left' as const, bg: '334155' }] : []),
     { header: 'PARECER / RESPOSTA DO PRESTADOR', key: 'resposta_prestador', width: 38, align: 'left' }
   );
 
@@ -407,6 +410,16 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
       cStatus.alignment = { vertical: 'middle', horizontal: 'center' };
       cStatus.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FEF2F2' } };
       cStatus.border = rowBorder;
+
+      // Arquivo de Origem se lote consolidado
+      if (hasMultiOriginFiles) {
+        const cOrig = dataRow.getCell(colPtr++);
+        cOrig.value = String(row['ARQUIVO_ORIGEM'] || '');
+        cOrig.font = { name: 'Calibri', size: 8, italic: true, color: { argb: 'FF475569' } };
+        cOrig.alignment = { vertical: 'middle', horizontal: 'left' };
+        cOrig.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: baseRowBg } };
+        cOrig.border = rowBorder;
+      }
 
       // Coluna Para Resposta do Prestador (Espaço em branco com borda pontilhada)
       const cResposta = dataRow.getCell(colPtr++);
