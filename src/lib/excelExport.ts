@@ -233,6 +233,7 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
 
   duplicateGroups.forEach((group, groupIdx) => {
     const intervalInfo = getGroupTimeInterval(group.rows);
+    const isVeryHigh = intervalInfo.level === 'very_high';
     const isHigh = intervalInfo.level === 'high';
     const isMedium = intervalInfo.level === 'medium';
 
@@ -241,7 +242,11 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     let probFontColor = '475569';
     let probLabel = intervalInfo.label || 'Outros (> 1h)';
 
-    if (isHigh) {
+    if (isVeryHigh) {
+      probBg = 'F3E8FF'; // Light Purple (Purple 100)
+      probFontColor = '6B21A8'; // Dark Purple (Purple 800)
+      probLabel = 'Mesmo Horário (Muito Suspeito)';
+    } else if (isHigh) {
       probBg = 'FEE2E2'; // Light Red
       probFontColor = '991B1B'; // Dark Red
     } else if (isMedium) {
@@ -388,13 +393,13 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
         name: 'Calibri', 
         size: 9, 
         bold: true, 
-        color: { argb: isHigh ? 'FF991B1B' : isMedium ? 'FF92400E' : 'FF334155' } 
+        color: { argb: isVeryHigh ? 'FF6B21A8' : isHigh ? 'FF991B1B' : isMedium ? 'FF92400E' : 'FF334155' } 
       };
       cHora.alignment = { vertical: 'middle', horizontal: 'center' };
       cHora.fill = { 
         type: 'pattern', 
         pattern: 'solid', 
-        fgColor: { argb: isHigh ? 'FEE2E2' : isMedium ? 'FEF3C7' : baseRowBg } 
+        fgColor: { argb: isVeryHigh ? 'F3E8FF' : isHigh ? 'FEE2E2' : isMedium ? 'FEF3C7' : baseRowBg } 
       };
       cHora.border = rowBorder;
 
@@ -492,7 +497,7 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     views: [{ showGridLines: true }]
   });
 
-  wsPrestadores.mergeCells('A1:G1');
+  wsPrestadores.mergeCells('A1:H1');
   const titP = wsPrestadores.getCell('A1');
   titP.value = 'RESUMO CONSOLIDADO POR PRESTADOR — GESTÃO DE CONTATOS E REGULARIZAÇÃO';
   titP.font = { name: 'Calibri', size: 13, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -505,6 +510,7 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     { name: 'NOME DO PRESTADOR', width: 34 },
     { name: 'MATRÍCULA / CÓDIGO', width: 20 },
     { name: 'TOTAL GRUPOS DUPLICADOS', width: 24 },
+    { name: 'MESMO HORÁRIO (0 MIN)', width: 22 },
     { name: 'CRÍTICAS (≤ 30 MIN)', width: 22 },
     { name: 'MÉDIAS (30 MIN - 1H)', width: 22 },
     { name: 'STATUS DE CONTATO', width: 24 },
@@ -524,16 +530,17 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
   });
 
   // Agrupamento por Prestador
-  const provMap: Record<string, { nome: string; matricula: string; total: number; high: number; medium: number }> = {};
+  const provMap: Record<string, { nome: string; matricula: string; total: number; veryHigh: number; high: number; medium: number }> = {};
   duplicateGroups.forEach(g => {
     const prov = g.params.prestador || 'Não informado';
     const mat = g.params.prestador_matricula || '';
     if (!provMap[prov]) {
-      provMap[prov] = { nome: prov, matricula: mat, total: 0, high: 0, medium: 0 };
+      provMap[prov] = { nome: prov, matricula: mat, total: 0, veryHigh: 0, high: 0, medium: 0 };
     }
     provMap[prov].total++;
     const intervalInfo = getGroupTimeInterval(g.rows);
-    if (intervalInfo.level === 'high') provMap[prov].high++;
+    if (intervalInfo.level === 'very_high') provMap[prov].veryHigh++;
+    else if (intervalInfo.level === 'high') provMap[prov].high++;
     else if (intervalInfo.level === 'medium') provMap[prov].medium++;
   });
 
@@ -565,31 +572,43 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
     c3.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
     c3.border = thinBorder;
 
+    // Coluna 4: Mesmo Horário (Muito Suspeito)
     const c4 = r.getCell(4);
-    c4.value = p.high;
-    c4.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF991B1B' } };
+    c4.value = p.veryHigh;
+    c4.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF6B21A8' } };
     c4.alignment = { vertical: 'middle', horizontal: 'center' };
-    c4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: p.high > 0 ? 'FEE2E2' : bg } };
+    c4.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: p.veryHigh > 0 ? 'F3E8FF' : bg } };
     c4.border = thinBorder;
 
+    // Coluna 5: ≤ 30min
     const c5 = r.getCell(5);
-    c5.value = p.medium;
-    c5.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF92400E' } };
+    c5.value = p.high;
+    c5.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF991B1B' } };
     c5.alignment = { vertical: 'middle', horizontal: 'center' };
-    c5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: p.medium > 0 ? 'FEF3C7' : bg } };
+    c5.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: p.high > 0 ? 'FEE2E2' : bg } };
     c5.border = thinBorder;
 
+    // Coluna 6: 30min - 1h
     const c6 = r.getCell(6);
-    c6.value = 'Pendente de Notificação';
-    c6.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF64748B' } };
+    c6.value = p.medium;
+    c6.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF92400E' } };
     c6.alignment = { vertical: 'middle', horizontal: 'center' };
-    c6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F1F5F9' } };
+    c6.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: p.medium > 0 ? 'FEF3C7' : bg } };
     c6.border = thinBorder;
 
+    // Coluna 7: Status de Contato
     const c7 = r.getCell(7);
-    c7.value = '';
-    c7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF' } };
-    c7.border = {
+    c7.value = 'Pendente de Notificação';
+    c7.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF64748B' } };
+    c7.alignment = { vertical: 'middle', horizontal: 'center' };
+    c7.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'F1F5F9' } };
+    c7.border = thinBorder;
+
+    // Coluna 8: Observações
+    const c8 = r.getCell(8);
+    c8.value = '';
+    c8.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF' } };
+    c8.border = {
       top: { style: 'dashed', color: { argb: '94A3B8' } },
       bottom: { style: 'dashed', color: { argb: '94A3B8' } },
       left: { style: 'thin', color: { argb: '94A3B8' } },
@@ -622,7 +641,7 @@ export async function exportFormattedExcelReport(options: ExportReportOptions) {
 export interface DashboardReportOptions {
   transactionCount: number;
   duplicateGroups: any[];
-  categoryStats: { high: number; medium: number; low: number; total: number };
+  categoryStats: { veryHigh?: number; high: number; medium: number; low: number; total: number };
   dashboardStats: {
     topDays: { day: string; count: number }[];
     topHours: { hour: string; count: number }[];
@@ -672,9 +691,10 @@ export async function exportFormattedDashboardReport(options: DashboardReportOpt
   const cards = [
     { title: 'Total Registros Analisados', value: transactionCount, color: '0F172A', textColor: 'FFFFFF', col: 'A', endCol: 'B' },
     { title: 'Grupos em Duplicidade', value: categoryStats.total, color: '7F1D1D', textColor: 'FFFFFF', col: 'C', endCol: 'C' },
-    { title: '≤ 30min (Crítico/Provável)', value: categoryStats.high, color: '991B1B', textColor: 'FFFFFF', col: 'D', endCol: 'E' },
-    { title: '30m - 1h (Moderado)', value: categoryStats.medium, color: 'B45309', textColor: 'FFFFFF', col: 'F', endCol: 'F' },
-    { title: '> 1h (Baixo)', value: categoryStats.low, color: '475569', textColor: 'FFFFFF', col: 'G', endCol: 'G' }
+    { title: 'Mesmo Horário (Muito Suspeito)', value: categoryStats.veryHigh ?? (itStats ? itStats.deltaZeroCount : 0), color: '6B21A8', textColor: 'FFFFFF', col: 'D', endCol: 'D' },
+    { title: '≤ 30min (Provável)', value: categoryStats.high, color: '991B1B', textColor: 'FFFFFF', col: 'E', endCol: 'E' },
+    { title: '30m - 1h (Menos)', value: categoryStats.medium, color: 'B45309', textColor: 'FFFFFF', col: 'F', endCol: 'F' },
+    { title: '> 1h (Outros)', value: categoryStats.low, color: '475569', textColor: 'FFFFFF', col: 'G', endCol: 'G' }
   ];
 
   ws.getRow(4).height = 22;
@@ -1614,8 +1634,8 @@ export function addITDiagnosticsWorksheet(
   ws.getRow(curRow).height = 22;
 
   const dtRows = [
-    { label: 'Δt = 0 min (Simultâneo / Mesmo Minuto)', count: itStats.deltaZeroCount, pct: `${itStats.instantPercent}%`, cat: 'Crítico (Bem Provável)' },
-    { label: 'Δt = 1 a 5 min (Micro-intervalo)', count: itStats.delta1to5Count, pct: `${itStats.microPercent}%`, cat: 'Alto Risco' },
+    { label: 'Δt = 0 min (Simultâneo / Mesmo Minuto)', count: itStats.deltaZeroCount, pct: `${itStats.instantPercent}%`, cat: 'Muito Suspeito (Mesmo Horário)' },
+    { label: 'Δt = 1 a 5 min (Micro-intervalo)', count: itStats.delta1to5Count, pct: `${itStats.microPercent}%`, cat: 'Bem Provável (Alto Risco)' },
     { label: 'Δt = 6 a 30 min (Mesmo Turno)', count: itStats.delta6to30Count, pct: `${itStats.shortPercent}%`, cat: 'Risco Moderado' },
     { label: 'Δt > 30 min (Reemissão Tardia)', count: itStats.deltaOver30Count, pct: `${itStats.extendedPercent}%`, cat: 'Acompanhamento' }
   ];
@@ -1652,8 +1672,8 @@ export function addITDiagnosticsWorksheet(
 
     const cF = r.getCell(6);
     cF.value = dtr.cat;
-    cF.font = { name: 'Calibri', size: 8.5, bold: true, color: { argb: idx === 0 ? 'FF991B1B' : 'FF0369A1' } };
-    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: idx === 0 ? 'FEE2E2' : bgRow } };
+    cF.font = { name: 'Calibri', size: 8.5, bold: true, color: { argb: idx === 0 ? 'FF6B21A8' : idx === 1 ? 'FF991B1B' : 'FF0369A1' } };
+    cF.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: idx === 0 ? 'F3E8FF' : idx === 1 ? 'FEE2E2' : bgRow } };
     cF.alignment = { vertical: 'middle', horizontal: 'center' };
     cF.border = thinBorder;
   });

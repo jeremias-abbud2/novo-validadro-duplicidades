@@ -247,7 +247,9 @@ export default function App() {
       }
     }
 
-    if (minDiff <= 30) {
+    if (minDiff === 0) {
+      return { minDiff, label: `Mesmo Horário (Muito Suspeito)`, level: 'very_high' };
+    } else if (minDiff <= 30) {
       return { minDiff, label: `≤ 30m (Bem Provável)`, level: 'high' };
     } else if (minDiff <= 60) {
       return { minDiff, label: `30m - 1h (Pouco Menos)`, level: 'medium' };
@@ -903,16 +905,18 @@ export default function App() {
   }, [filteredDuplicates]);
 
   const categoryStats = useMemo(() => {
+    let veryHigh = 0;
     let high = 0;
     let medium = 0;
     let low = 0;
     filteredDuplicates.forEach(g => {
       const info = getGroupTimeInterval(g.rows);
-      if (info.level === 'high') high++;
+      if (info.level === 'very_high') veryHigh++;
+      else if (info.level === 'high') high++;
       else if (info.level === 'medium') medium++;
       else low++;
     });
-    return { high, medium, low, total: filteredDuplicates.length };
+    return { veryHigh, high, medium, low, total: filteredDuplicates.length };
   }, [filteredDuplicates]);
 
   const dashboardStats = useMemo(() => {
@@ -1216,6 +1220,7 @@ export default function App() {
     const summaryData = [
       { Métrica: isFiltered ? 'Total de Registros nos Filtros Atuais' : 'Total de Registros Analisados', Valor: isFiltered ? filteredRowCount : transactionCount },
       { Métrica: isFiltered ? 'Grupos de Duplicidade Filtrados' : 'Total de Grupos de Duplicidade', Valor: filteredDuplicates.length },
+      { Métrica: 'Duplicidades Muito Suspeitas (Mesmo Horário - 0m)', Valor: categoryStats.veryHigh },
       { Métrica: 'Duplicidades Bem Prováveis (≤ 30min)', Valor: categoryStats.high },
       { Métrica: 'Duplicidades Pouco Menos Prováveis (30m - 1h)', Valor: categoryStats.medium },
       { Métrica: 'Outras Duplicidades (> 1h)', Valor: categoryStats.low },
@@ -1373,7 +1378,13 @@ export default function App() {
     if (filters.situacao) activeFiltersList.push(`Situação: ${filters.situacao}`);
     if (filters.conselhoExecutante) activeFiltersList.push(`CRM: ${filters.conselhoExecutante}`);
     if (filters.intervalCategory) {
-      const catLabel = filters.intervalCategory === 'high' ? '≤ 30min (Bem Provável)' : filters.intervalCategory === 'medium' ? '30m - 1h' : '> 1h';
+      const catLabel = filters.intervalCategory === 'very_high'
+        ? 'Mesmo Horário (Muito Suspeito)'
+        : filters.intervalCategory === 'high'
+        ? '≤ 30min (Bem Provável)'
+        : filters.intervalCategory === 'medium'
+        ? '30m - 1h (Pouco Menos)'
+        : '> 1h';
       activeFiltersList.push(`Intervalo: ${catLabel}`);
     }
 
@@ -1794,17 +1805,22 @@ export default function App() {
                   <span className="text-[10px] text-gray-400 uppercase">Total:</span>
                   <span className="text-sm font-mono font-bold text-white">{categoryStats.total}</span>
                 </div>
-                <div className="px-3 py-2 bg-red-950/40 border border-red-500/30 rounded flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                <div className="px-3 py-2 bg-purple-950/40 border border-purple-500/40 rounded flex items-center gap-2" title="Transações registradas exatamente no mesmo horário (0 min)">
+                  <span className="w-2 h-2 rounded-full bg-purple-400 animate-pulse"></span>
+                  <span className="text-[10px] text-purple-300 uppercase font-semibold">Mesmo Horário (Muito Suspeito):</span>
+                  <span className="text-sm font-mono font-bold text-purple-300">{categoryStats.veryHigh}</span>
+                </div>
+                <div className="px-3 py-2 bg-red-950/40 border border-red-500/30 rounded flex items-center gap-2" title="Intervalo até 30 minutos">
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
                   <span className="text-[10px] text-red-300 uppercase">≤ 30m (Provável):</span>
                   <span className="text-sm font-mono font-bold text-red-400">{categoryStats.high}</span>
                 </div>
-                <div className="px-3 py-2 bg-amber-950/30 border border-amber-500/30 rounded flex items-center gap-2">
+                <div className="px-3 py-2 bg-amber-950/30 border border-amber-500/30 rounded flex items-center gap-2" title="Intervalo entre 30 minutos e 1 hora">
                   <span className="w-2 h-2 rounded-full bg-amber-500"></span>
                   <span className="text-[10px] text-amber-300 uppercase">30m-1h (Menos):</span>
                   <span className="text-sm font-mono font-bold text-amber-400">{categoryStats.medium}</span>
                 </div>
-                <div className="px-3 py-2 bg-white/5 border border-white/10 rounded flex items-center gap-2">
+                <div className="px-3 py-2 bg-white/5 border border-white/10 rounded flex items-center gap-2" title="Intervalo superior a 1 hora">
                   <span className="w-2 h-2 rounded-full bg-gray-400"></span>
                   <span className="text-[10px] text-gray-400 uppercase">&gt; 1h:</span>
                   <span className="text-sm font-mono font-bold text-gray-300">{categoryStats.low}</span>
@@ -2522,6 +2538,7 @@ export default function App() {
                         className="w-full bg-[#0A0B0D] border border-white/10 rounded px-4 py-2 text-xs focus:border-white/30 outline-none transition-all cursor-pointer"
                       >
                         <option value="">Todos</option>
+                        <option value="very_high">Mesmo Horário (Muito Suspeito - 0m)</option>
                         <option value="high">≤ 30min (Bem Provável)</option>
                         <option value="medium">30min - 1h (Pouco Menos)</option>
                         <option value="low">&gt; 1h</option>
@@ -2659,7 +2676,9 @@ export default function App() {
                                 const time = getRowTime(row);
 
                                 const badgeStyle = 
-                                  intervalInfo.level === 'high' 
+                                  intervalInfo.level === 'very_high'
+                                    ? "bg-purple-600/30 border-purple-400 text-purple-200 font-extrabold shadow-md shadow-purple-900/40 ring-1 ring-purple-400/50"
+                                    : intervalInfo.level === 'high' 
                                     ? "bg-red-500/25 border-red-500/50 text-red-300 font-bold shadow-sm shadow-red-500/20"
                                     : intervalInfo.level === 'medium'
                                     ? "bg-amber-500/20 border-amber-500/40 text-amber-300 font-semibold"
@@ -2670,7 +2689,9 @@ export default function App() {
                                     <span 
                                       className={cn("px-1.5 py-0.5 border rounded font-mono text-[10px] w-full text-center", badgeStyle)}
                                       title={
-                                        intervalInfo.level === 'high' 
+                                        intervalInfo.level === 'very_high'
+                                          ? 'Mesmo Horário Exato (0 min - Muito Suspeito)'
+                                          : intervalInfo.level === 'high' 
                                           ? 'Intervalo ≤ 30 min (Bem Provável)' 
                                           : intervalInfo.level === 'medium' 
                                           ? 'Intervalo entre 30 min e 1h (Um pouco menos provável)' 
@@ -2693,10 +2714,11 @@ export default function App() {
                               {intervalInfo.minDiff !== null && (
                                 <span className={cn(
                                   "text-[8px] font-mono mt-0.5 px-1 rounded uppercase tracking-wider text-center w-full truncate",
+                                  intervalInfo.level === 'very_high' ? "text-purple-300 bg-purple-500/20 font-bold border border-purple-500/30" :
                                   intervalInfo.level === 'high' ? "text-red-400 bg-red-400/10 font-bold" :
                                   intervalInfo.level === 'medium' ? "text-amber-400 bg-amber-400/10" : "text-gray-400 bg-white/5"
                                 )} title={intervalInfo.label}>
-                                  {intervalInfo.level === 'high' ? '≤30m (Provável)' : intervalInfo.level === 'medium' ? '30m-1h' : '>1h'}
+                                  {intervalInfo.level === 'very_high' ? 'Mesmo Horário (Muito Suspeito)' : intervalInfo.level === 'high' ? '≤30m (Provável)' : intervalInfo.level === 'medium' ? '30m-1h' : '>1h'}
                                 </span>
                               )}
                             </>
@@ -2714,6 +2736,7 @@ export default function App() {
                   <span className="text-amber-500">●</span>
                   <span>Critério: Mesma Data, Prestador, Especialidade, Beneficiário, Procedimento, Tipo, Situação, Qtd e Conselho.</span>
                   <div className="flex items-center gap-3 ml-2 pl-3 border-l border-white/10">
+                    <span className="flex items-center gap-1 text-purple-300 font-semibold"><span className="w-2 h-2 rounded-full bg-purple-400"></span> Mesmo Horário (Muito Suspeito)</span>
                     <span className="flex items-center gap-1 text-red-400 font-medium"><span className="w-2 h-2 rounded-full bg-red-500"></span> ≤ 30min (Bem Provável)</span>
                     <span className="flex items-center gap-1 text-amber-400 font-medium"><span className="w-2 h-2 rounded-full bg-amber-500"></span> 30min-1h (Pouco Menos)</span>
                     <span className="flex items-center gap-1 text-gray-400 font-medium"><span className="w-2 h-2 rounded-full bg-gray-500"></span> &gt; 1h</span>
